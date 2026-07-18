@@ -1,7 +1,9 @@
 # API 路由定义文件 - 实现 5 个接口
+from __future__ import annotations
 import logging
 import uuid
 import json
+import asyncio
 from fastapi import APIRouter
 from app.api.schemas import (
     SessionCreateRequest,
@@ -12,19 +14,205 @@ from app.api.schemas import (
     ChatResponse,
     ChatContinueRequest,
     Message,
+    CustomerState,
     FinishResponse,
+    FinishRequest,
     SessionResponse,
+    FinalDimensions,
+    DimensionWithReasoning,
+    ChampionReplay,
+    ChampionRound,
+    KeyMoment,
+    CaseAnalysisRequest,
+    CaseAnalysisData,
+    CasePracticeRequest,
+    CasePracticeData,
+    PersonaRequest,
+    PersonaResponse,
+    PersonaTags,
+    PersonaCustomerProfile,
 )
 from app.core.session_manager import session_manager
 from app.core.llm_client import call_llm
 from app.agents.error_tracker import error_tracker
 from app.agents.customer_simulator import CustomerSimulator
 from app.agents.evaluator_coach import EvaluatorCoach
-from app.prompts.templates import SUMMARY_PROMPT
+from app.prompts.templates import SUMMARY_PROMPT, CASE_ANALYSIS_PROMPT, CASE_CHAMPION_REPLAY_PROMPT, CHAMPION_PRACTICE_PROMPT, PERSONA_GENERATOR_PROMPT
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+CONCERN_KEYWORDS = ("刺痛", "烂脸", "过敏", "泛红", "不耐受", "敏感")
+INFO_KEYWORDS = {
+    "skin_type": ("肤质", "敏感肌", "干皮", "油皮", "混合皮"),
+    "product_history": ("用过", "使用过", "护肤习惯", "A醇", "酸类", "VC"),
+    "budget": ("预算", "价格", "多少钱", "贵"),
+}
+BUYING_SIGNAL_KEYWORDS = ("多少钱", "能试试", "适合我", "想买", "购买", "下单")
+EFFECT_KEYWORDS = ("没效果", "担心效果", "长期", "反弹")
+OTHER_PARTY_KEYWORDS = ("朋友", "家人", "老公", "妈妈", "同事")
+RECOMMENDATION_INFO = {"skin_type", "product_history", "budget"}
+DIMENSION_NAMES = ("listening", "warmth", "professionalism", "objection_handling", "recommendation")
+MAX_CASE_PRACTICE_TURNS = 10
+
+
+def persona_context(session_data: dict) -> dict:
+    """返回当前会话使用的完整画像，旧会话使用兼容画像。"""
+    profile = session_data.get("persona_profile")
+    if profile:
+        return profile
+
+    legacy = session_data.get("customer_profile", {})
+    tolerance = legacy.get("tolerance", "medium")
+    return {
+        "persona": legacy.get("name", "顾客"),
+        "skin_type": legacy.get("skin_type", "未知肤质"),
+        "goal": "了解适合自己的护肤方案",
+        "concerns": [legacy.get("concern", "当前顾虑")],
+        "tolerance": "low" if "低" in tolerance else "high" if "高" in tolerance else "medium",
+        "background": legacy.get("experience", ""),
+        "tags": {},
+        "display_line": "",
+    }
+
+
+def profile_concerns(profile: dict) -> list[str]:
+    """提取画像顾虑，供阶段规则和总结使用。"""
+    raw_concerns = profile.get("concerns")
+    concerns = raw_concerns if isinstance(raw_concerns, list) else [raw_concerns]
+    concerns = [concern for concern in concerns if concern]
+    if not concerns:
+        concerns = [profile.get("concern", "当前顾虑")]
+    return [str(concern) for concern in concerns if concern]
+
+
+def customer_messages_by_turn(messages: list[dict]) -> dict[int, str]:
+    """按 BA 轮次整理顾客原话，供销冠回放优先引用。"""
+    turn = 0
+    result: dict[int, str] = {}
+    for message in messages:
+        role = message.get("role")
+        if role == "ba":
+            turn += 1
+        elif role == "customer":
+            result[max(turn, 1)] = message.get("content", "")
+    return result
+
+
+def ba_messages_by_turn(messages: list[dict]) -> dict[int, str]:
+    """按轮次整理 BA 原话。"""
+    turn = 0
+    result: dict[int, str] = {}
+    for message in messages:
+        if message.get("role") == "ba":
+            turn += 1
+            result[turn] = message.get("content", "")
+    return result
+
+
+def fallback_champion_replay(session_data: dict) -> ChampionReplay:
+    """LLM 不可用时生成至少一轮、且与当前画像相关的销冠示范。"""
+    profile = persona_context(session_data)
+    concerns = profile_concerns(profile)
+    concern = concerns[0] if concerns else "使用效果和安全性"
+    goal = profile.get("goal", "了解适合自己的护肤方案")
+    customer_by_turn = customer_messages_by_turn(session_data.get("messages", []))
+    ba_by_turn = ba_messages_by_turn(session_data.get("messages", []))
+    customer_message = customer_by_turn.get(1) or "我想先了解适合自己的方案。"
+    champion_reply = (
+        f"我先确认一下，您主要想解决的是{goal}，同时最在意{concern}。"
+        "我先了解您的使用情况，再给您一套循序渐进的建议，可以吗？"
+    )
+    return ChampionReplay(
+        title="基于当前顾客画像的销冠示范",
+        rounds=[
+            ChampionRound(
+                turn=1,
+                customer_message=customer_message,
+                ba_reply=ba_by_turn.get(1, "暂无 BA 原回复"),
+                champion_reply=champion_reply,
+                skill_tags=["先确认诉求", "回应核心顾虑", "给出可执行方案"],
+            )
+        ],
+    )
+
+
+def fallback_finish_response(session_data: dict) -> dict:
+    """生成总结页可直接渲染的基础兜底数据。"""
+    profile = persona_context(session_data)
+    concerns = profile_concerns(profile)
+    concern = concerns[0] if concerns else "使用效果和安全性"
+    goal = profile.get("goal", "了解适合自己的护肤方案")
+    raw_dimensions = session_data.get("dimensions", {})
+    scores = {
+        name: max(0, min(100, int(raw_dimensions.get(name, 0))))
+        for name in ("listening", "warmth", "professionalism", "objection_handling", "recommendation")
+    }
+    reasoning = "基于当前对话状态生成的基础评分。"
+    dimensions = FinalDimensions(
+        **{
+            name: DimensionWithReasoning(score=score, reasoning=reasoning)
+            for name, score in scores.items()
+        }
+    )
+    return FinishResponse(
+        summary=f"本次训练围绕“{goal}”展开，销冠示范会优先确认诉求并回应“{concern}”。",
+        total_score=round(sum(scores.values()) / len(scores)),
+        dimensions=dimensions,
+        key_moments=[],
+        champion_replay=fallback_champion_replay(session_data),
+        status="completed",
+    ).model_dump()
+
+
+def build_finish_response(parsed: dict, session_data: dict) -> dict:
+    """将 LLM 总结转换为稳定响应，缺失销冠轮次时补动态兜底。"""
+    fallback = fallback_finish_response(session_data)
+    if not parsed:
+        return fallback
+
+    try:
+        fallback_dimensions = fallback["dimensions"]
+        dimensions_data = parsed.get("dimensions") or {}
+        dimension_values = {}
+        for name in ("listening", "warmth", "professionalism", "objection_handling", "recommendation"):
+            raw = dimensions_data.get(name, fallback_dimensions[name])
+            if isinstance(raw, int):
+                raw = {"score": raw, "reasoning": "评分依据由总结模型提供。"}
+            dimension_values[name] = DimensionWithReasoning(**raw)
+
+        key_moments = [KeyMoment(**moment) for moment in (parsed.get("key_moments") or [])]
+        fallback_replay = ChampionReplay(**fallback["champion_replay"])
+        replay_data = parsed.get("champion_replay") or {}
+        rounds = []
+        customer_by_turn = customer_messages_by_turn(session_data.get("messages", []))
+        for raw_round in replay_data.get("rounds") or []:
+            if not isinstance(raw_round, dict):
+                continue
+            raw_round = dict(raw_round)
+            turn = int(raw_round.get("turn", 1))
+            raw_round["turn"] = turn
+            raw_round["customer_message"] = raw_round.get("customer_message") or customer_by_turn.get(turn)
+            raw_round["ba_reply"] = raw_round.get("ba_reply") or "暂无 BA 原回复"
+            raw_round["champion_reply"] = raw_round.get("champion_reply") or fallback_replay.rounds[0].champion_reply
+            raw_round["skill_tags"] = raw_round.get("skill_tags") or fallback_replay.rounds[0].skill_tags
+            rounds.append(ChampionRound(**raw_round))
+        champion_replay = ChampionReplay(
+            title=replay_data.get("title") or fallback_replay.title,
+            rounds=rounds or fallback_replay.rounds,
+        )
+        return FinishResponse(
+            summary=parsed.get("summary") or fallback["summary"],
+            total_score=int(parsed.get("total_score", fallback["total_score"])),
+            dimensions=FinalDimensions(**dimension_values),
+            key_moments=key_moments,
+            champion_replay=champion_replay,
+            status="completed",
+        ).model_dump()
+    except (TypeError, ValueError, KeyError) as exc:
+        logger.warning(f"总结数据不完整，使用动态兜底: {exc}")
+        return fallback
 
 
 def success(data: dict, message: str = "success") -> dict:
@@ -37,6 +225,227 @@ def error(message: str) -> dict:
     return {"code": -1, "message": message}
 
 
+def build_final_dimensions(dimensions_data: dict) -> FinalDimensions:
+    """将 LLM 返回的五维评分转换为 API 模型。"""
+    return FinalDimensions(
+        listening=DimensionWithReasoning(**dimensions_data.get("listening", {"score": 0, "reasoning": ""})),
+        warmth=DimensionWithReasoning(**dimensions_data.get("warmth", {"score": 0, "reasoning": ""})),
+        professionalism=DimensionWithReasoning(**dimensions_data.get("professionalism", {"score": 0, "reasoning": ""})),
+        objection_handling=DimensionWithReasoning(**dimensions_data.get("objection_handling", {"score": 0, "reasoning": ""})),
+        recommendation=DimensionWithReasoning(**dimensions_data.get("recommendation", {"score": 0, "reasoning": ""})),
+    )
+
+
+def build_key_moments(key_moments_data: list) -> list[KeyMoment]:
+    """将 LLM 返回的关键时刻转换为 API 模型。"""
+    return [KeyMoment(**moment) for moment in key_moments_data]
+
+
+def build_champion_replay(champion_replay_data: dict) -> ChampionReplay:
+    """将 LLM 返回的销冠示范转换为 API 模型。"""
+    rounds_data = champion_replay_data.get("rounds", [])
+    rounds = [ChampionRound(**round_data) for round_data in rounds_data]
+    return ChampionReplay(
+        title=champion_replay_data.get("title", "销冠示范"),
+        rounds=rounds,
+    )
+
+
+async def update_session_progress(
+    session_data: dict,
+    ba_message: str,
+    customer_message: str | None,
+) -> None:
+    """根据本轮对话更新顾客状态、阶段和轮次记录。"""
+    # ponytail: 关键词规则只覆盖当前 Demo 场景；扩展多场景时改为结构化信号抽取。
+    state = session_data["customer_state"]
+    profile = persona_context(session_data)
+    concerns = profile_concerns(profile)
+    state.setdefault("trust", 50)
+    state.setdefault("intent", 30)
+    state.setdefault("fear", concerns[0] if concerns else "怕刺痛烂脸")
+    state.setdefault("irritation_fear", 70 if profile.get("tolerance") == "low" else 40)
+    state.setdefault("addressed_concerns", [])
+    state.setdefault("collected_info", [])
+    state.setdefault("current_stage", session_data.get("stage", "opening"))
+    state.setdefault("milestones", {})
+    session_data.setdefault("history", [])
+    session_data["ba_turn_count"] = session_data.get("ba_turn_count", 0) + 1
+
+    customer_text = customer_message or ""
+    for info_name, keywords in INFO_KEYWORDS.items():
+        if any(keyword in customer_text for keyword in keywords) and info_name not in state["collected_info"]:
+            state["collected_info"].append(info_name)
+
+    concern_terms = tuple(set(CONCERN_KEYWORDS).union(concerns))
+    if any(keyword in ba_message for keyword in concern_terms):
+        if any(keyword in ba_message for keyword in ("理解", "先", "建议", "可以", "方案", "低频", "低浓度", "修护")):
+            marker = concerns[0] if concerns else "afraid_of_irritation"
+            if marker not in state["addressed_concerns"]:
+                state["addressed_concerns"].append(marker)
+
+    current_stage = session_data.get("stage", "opening")
+    customer_has_concern = any(keyword in customer_text for keyword in concern_terms)
+    customer_has_buying_signal = any(keyword in customer_text for keyword in BUYING_SIGNAL_KEYWORDS)
+    ba_turn_count = session_data["ba_turn_count"]
+    has_recommendation_info = RECOMMENDATION_INFO.issubset(state["collected_info"])
+    has_addressed_concern = bool(state["addressed_concerns"])
+    previous_milestones = state["milestones"]
+    effect_concern = previous_milestones.get("effect_concern", False) or any(
+        keyword in "、".join(concerns + [customer_text]) for keyword in EFFECT_KEYWORDS
+    )
+    other_involved = previous_milestones.get("other_involved", False) or any(
+        keyword in customer_text for keyword in OTHER_PARTY_KEYWORDS
+    )
+    state["milestones"] = {
+        "connection_established": state["trust"] > 30,
+        "key_info_confirmed": has_recommendation_info,
+        "time_invested": ba_turn_count >= 5,
+        "purchase_ready": state["intent"] > 60 and customer_has_buying_signal and ba_turn_count >= 5 and not other_involved,
+        "effect_concern": effect_concern,
+        "other_involved": other_involved,
+    }
+
+    if current_stage == "opening" and state["milestones"]["connection_established"]:
+        current_stage = "probing"
+    elif current_stage == "probing":
+        if (customer_has_concern or effect_concern) and not has_addressed_concern:
+            current_stage = "objection"
+        elif has_recommendation_info and has_addressed_concern:
+            current_stage = "recommending"
+    elif current_stage == "objection":
+        if has_recommendation_info and has_addressed_concern:
+            current_stage = "recommending"
+    elif current_stage == "recommending":
+        if state["milestones"]["purchase_ready"]:
+            current_stage = "closing"
+
+    session_data["stage"] = current_stage
+    state["current_stage"] = current_stage
+    session_data["history"].append(
+        {
+            "turn": ba_turn_count,
+            "ba_message": ba_message,
+            "customer_message": customer_message,
+            "stage": current_stage,
+            "customer_state": {
+                "trust": state["trust"],
+                "intent": state["intent"],
+                "fear": state["fear"],
+                "irritation_fear": state["irritation_fear"],
+                "addressed_concerns": list(state["addressed_concerns"]),
+                "collected_info": list(state["collected_info"]),
+                "current_stage": current_stage,
+                "milestones": dict(state["milestones"]),
+            },
+        }
+    )
+
+
+async def customer_state_response(session_data: dict) -> CustomerState:
+    """将内存中的顾客状态转换为 API 模型。"""
+    state = session_data["customer_state"]
+    concerns = profile_concerns(persona_context(session_data))
+    state.setdefault("trust", 50)
+    state.setdefault("intent", 30)
+    state.setdefault("fear", concerns[0] if concerns else "怕刺痛烂脸")
+    state.setdefault("irritation_fear", 70 if persona_context(session_data).get("tolerance") == "low" else 40)
+    state.setdefault("addressed_concerns", [])
+    state.setdefault("collected_info", [])
+    state.setdefault("current_stage", session_data.get("stage", "opening"))
+    state.setdefault("milestones", {})
+    return CustomerState(**state)
+
+
+async def dimension_reasoning_response(session_data: dict) -> FinalDimensions:
+    """返回实时五维评分依据，兼容创建于本次改造前的会话。"""
+    dimensions = session_data["dimensions"]
+    session_data.setdefault(
+        "dimension_reasoning",
+        {
+            name: {
+                "score": dimensions.get(name, 0),
+                "reasoning": "【观察】本轮没有可用评分依据。【对比】无法完整对照当前阶段。【原因】会话创建于实时推理接入前。【标杆】请继续完成一轮训练。",
+            }
+            for name in DIMENSION_NAMES
+        },
+    )
+    return FinalDimensions(**session_data["dimension_reasoning"])
+
+
+# 标签中文映射
+AGE_LABELS = {"18-25": "18-25岁", "26-35": "26-35岁", "36+": "36岁以上"}
+OILINESS_LABELS = {"oily": "油皮", "dry": "干皮", "combination": "混合皮"}
+SENSITIVITY_LABELS = {"sensitive": "敏感肌", "non_sensitive": "非敏感肌"}
+
+
+@router.post("/persona")
+async def generate_persona(request: PersonaRequest) -> dict:
+    """根据标签生成消费者画像"""
+    try:
+        logger.info(f"生成画像: age={request.age}, oiliness={request.oiliness}, sensitivity={request.sensitivity}")
+
+        # 纯拼接画像句（不经过 LLM）
+        parts = [
+            AGE_LABELS.get(request.age, request.age),
+            OILINESS_LABELS.get(request.oiliness, request.oiliness),
+            SENSITIVITY_LABELS.get(request.sensitivity, request.sensitivity),
+        ]
+        if request.concern_text:
+            parts.append(request.concern_text)
+        display_line = "、".join(parts)
+
+        # 调用 LLM 生成画像细节
+        prompt = PERSONA_GENERATOR_PROMPT.format(
+            age=request.age,
+            oiliness=request.oiliness,
+            sensitivity=request.sensitivity,
+            concern_text=request.concern_text or "（未填写，请根据年龄和肤质推断典型顾虑）",
+        )
+        result = await call_llm(prompt)
+
+        if result is None:
+            return error("画像生成失败，请重试")
+
+        parsed = json.loads(result)
+
+        # 构建标签对象
+        tags = PersonaTags(
+            age=request.age,
+            oiliness=request.oiliness,
+            sensitivity=request.sensitivity,
+            concern_text=request.concern_text,
+        )
+
+        # 构建顾客画像
+        customer_profile = PersonaCustomerProfile(
+            persona=parsed.get("persona", ""),
+            skin_type=parsed.get("skin_type", ""),
+            goal=parsed.get("goal", ""),
+            concerns=parsed.get("concerns", []),
+            tolerance=parsed.get("tolerance", "medium"),
+            background=parsed.get("background", ""),
+            tags=tags,
+            display_line=display_line,
+        )
+
+        response = PersonaResponse(
+            display_line=display_line,
+            customer_profile=customer_profile,
+            initial_message=parsed.get("initial_message", ""),
+        )
+
+        return success(response.model_dump())
+
+    except json.JSONDecodeError as e:
+        logger.error(f"画像 JSON 解析失败: {str(e)}")
+        return error("画像数据格式错误")
+
+    except Exception as e:
+        logger.error(f"生成画像失败: {str(e)}")
+        return error(f"生成画像失败: {str(e)}")
+
+
 @router.post("/session")
 async def create_session(request: SessionCreateRequest) -> dict:
     """创建会话"""
@@ -44,49 +453,99 @@ async def create_session(request: SessionCreateRequest) -> dict:
         session_id = str(uuid.uuid4())
         logger.info(f"创建会话: {session_id}, scenario={request.scenario_id}")
 
-        # 顾客信息
-        customer_profile = CustomerProfile(
-            name="林小姐",
-            age=25,
-            skin_type="敏感肌",
-            experience="护肤新手",
-            tolerance="低耐受",
-            concern="怕刺痛烂脸",
-        )
+        if request.customer_profile and request.initial_message:
+            # 动态画像模式
+            profile_data = request.customer_profile
+            initial_message = request.initial_message
+            customer_profile = CustomerProfile(
+                name=profile_data.get("persona", "顾客"),
+                age=0,
+                skin_type=profile_data.get("skin_type", ""),
+                experience="",
+                tolerance=profile_data.get("tolerance", "medium"),
+                concern=profile_data.get("concerns", ["未知"])[0] if profile_data.get("concerns") else "未知",
+            )
+            # 保存完整画像数据到会话
+            session_data = {
+                "session_id": session_id,
+                "customer_profile": customer_profile.model_dump(),
+                "persona_profile": profile_data,  # 保存完整画像
+                "messages": [],
+                "stage": "opening",
+                "dimensions": DimensionScores(
+                    listening=0, warmth=0, professionalism=0,
+                    objection_handling=0, recommendation=0,
+                ).model_dump(),
+                "dimension_reasoning": {
+                    name: {"score": 0, "reasoning": "等待本轮表现。"}
+                    for name in DIMENSION_NAMES
+                },
+                "status": "active",
+                "history": [],
+                "customer_state": {
+                    "trust": 30,
+                    "intent": 30,
+                    "fear": profile_data.get("concerns", ["未知"])[0] if profile_data.get("concerns") else "未知",
+                    "irritation_fear": 70 if profile_data.get("tolerance") == "low" else 40,
+                    "addressed_concerns": [],
+                    "collected_info": [],
+                    "current_stage": "opening",
+                },
+                "ba_turn_count": 0,
+            }
+        else:
+            # 兼容旧逻辑（硬编码画像）
+            customer_profile = CustomerProfile(
+                name="林小姐",
+                age=25,
+                skin_type="敏感肌",
+                experience="护肤新手",
+                tolerance="低耐受",
+                concern="怕刺痛烂脸",
+            )
+            initial_message = "你好，我最近看到早C晚A很火，但我皮肤有点敏感，怕用了会刺痛烂脸，你能帮我看看吗？"
+            session_data = {
+                "session_id": session_id,
+                "customer_profile": customer_profile.model_dump(),
+                "messages": [],
+                "stage": "opening",
+                "dimensions": DimensionScores(
+                    listening=0, warmth=0, professionalism=0,
+                    objection_handling=0, recommendation=0,
+                ).model_dump(),
+                "dimension_reasoning": {
+                    name: {"score": 0, "reasoning": "等待本轮表现。"}
+                    for name in DIMENSION_NAMES
+                },
+                "status": "active",
+                "history": [],
+                "customer_state": {
+                    "trust": 30,
+                    "intent": 30,
+                    "fear": "怕刺痛烂脸",
+                    "irritation_fear": 70,
+                    "addressed_concerns": [],
+                    "collected_info": [],
+                    "current_stage": "opening",
+                },
+                "ba_turn_count": 0,
+            }
 
-        # 初始雷达图全 0
-        dimensions = DimensionScores(
-            listening=0, warmth=0, professionalism=0,
-            objection_handling=0, recommendation=0,
-        )
-
-        # 会话数据
-        session_data = {
-            "session_id": session_id,
-            "customer_profile": customer_profile.model_dump(),
-            "messages": [],
-            "stage": "opening",
-            "dimensions": dimensions.model_dump(),
-            "status": "active",
-            "history": [],
-            "customer_state": {"trust": 50, "intent": 30, "fear": "怕刺痛烂脸"},
-        }
-
-        # 顾客开场消息
-        initial_message = "你好，我最近看到早C晚A很火，但我皮肤有点敏感，怕用了会刺痛烂脸，你能帮我看看吗？"
         session_data["messages"].append(
             {"role": "customer", "content": initial_message, "type": None, "requires_action": False}
         )
 
-        # 保存会话
         session_manager.create(session_id, session_data)
 
+        dimensions = DimensionScores(**session_data["dimensions"])
         response = SessionCreateResponse(
             session_id=session_id,
             customer_profile=customer_profile,
             stage="opening",
             initial_customer_message=initial_message,
             dimensions=dimensions,
+            customer_state=CustomerState(**session_data["customer_state"]),
+            persona_profile=session_data.get("persona_profile"),
         )
 
         return success(response.model_dump())
@@ -117,21 +576,75 @@ async def chat(request: ChatRequest) -> dict:
             {"role": "ba", "content": request.message, "type": None, "requires_action": False}
         )
 
-        # 评估教练
+        # 评估教练与顾客模拟器互不依赖，先并行启动以减少等待时间。
         coach = EvaluatorCoach(session_id, session_manager, error_tracker)
+        current_profile = persona_context(session_data)
+        concerns_text = "、".join(profile_concerns(current_profile))
+        conversation_history = "\n".join(
+            f"[{message['role']}] {message['content']}" for message in session_data["messages"]
+        )
+        previous_messages = session_data["messages"][:-1]
+        recent_history = "\n".join(
+            f"[{message['role']}] {message['content']}" for message in previous_messages[-8:]
+        ) or "（暂无历史对话）"
+        last_customer_message = next(
+            (
+                message["content"]
+                for message in reversed(previous_messages)
+                if message.get("role") == "customer"
+            ),
+            "",
+        )
+
         context = {
             "stage": session_data["stage"],
-            "concerns": session_data["customer_profile"]["concern"],
+            "concerns": concerns_text,
+            "persona_profile": current_profile,
+            "customer_state": session_data["customer_state"],
+            "conversation_history": conversation_history,
+            "last_customer_message": last_customer_message,
+            "turn": session_data.get("ba_turn_count", 0) + 1,
         }
-        eval_result = await coach.evaluate(request.message, context)
+        simulator = CustomerSimulator(session_id, session_manager)
+        simulator_state = {
+            **session_data["customer_state"],
+            "persona_profile": current_profile,
+            "conversation_history": recent_history,
+        }
+        customer_task = asyncio.create_task(
+            simulator.respond(request.message, simulator_state)
+        )
+
+        try:
+            eval_result = await coach.evaluate(request.message, context)
+            coach_decision = eval_result["coach_decision"]
+            if coach_decision["intervene"]:
+                customer_task.cancel()
+                await asyncio.gather(customer_task, return_exceptions=True)
+                customer_result = None
+            else:
+                customer_result = await customer_task
+        finally:
+            if not customer_task.done():
+                customer_task.cancel()
+                await asyncio.gather(customer_task, return_exceptions=True)
 
         # 更新雷达图
         session_data["dimensions"] = eval_result["dimensions"]
+        session_data["dimension_reasoning"] = eval_result.get(
+            "dimension_reasoning",
+            {
+                name: {
+                    "score": eval_result["dimensions"].get(name, 0),
+                    "reasoning": "【观察】本轮模拟教练未提供评分依据。【对比】无法完整对照当前阶段。【原因】当前结果来自兼容路径。【标杆】请接入实时教练输出。",
+                }
+                for name in DIMENSION_NAMES
+            },
+        )
 
         new_messages = []
 
         # 教练决策
-        coach_decision = eval_result["coach_decision"]
         if coach_decision["intervene"]:
             # 教练介入，添加教练消息
             coach_msg = Message(
@@ -139,22 +652,24 @@ async def chat(request: ChatRequest) -> dict:
                 content=coach_decision["content"],
                 type=coach_decision["type"],
                 requires_action=coach_decision["requires_action"],
+                champion_replay=coach_decision.get("champion_replay"),
             )
             session_data["messages"].append(coach_msg.model_dump())
             new_messages.append(coach_msg.model_dump())
 
             # halt 状态暂停会话
-            if coach_decision["type"] == "halt":
+            if coach_decision["type"] in ("halt", "halt_with_champion"):
                 session_data["status"] = "halted"
         else:
-            # 无介入，调用顾客模拟器
-            simulator = CustomerSimulator(session_id, session_manager)
-            customer_result = await simulator.respond(request.message, session_data["customer_state"])
-
             # 更新顾客状态
+            assert customer_result is not None
             state_delta = customer_result["state_delta"]
-            session_data["customer_state"]["trust"] += state_delta.get("trust", 0)
-            session_data["customer_state"]["intent"] += state_delta.get("intent", 0)
+            session_data["customer_state"]["trust"] = max(
+                0, min(100, session_data["customer_state"]["trust"] + state_delta.get("trust", 0))
+            )
+            session_data["customer_state"]["intent"] = max(
+                0, min(100, session_data["customer_state"]["intent"] + state_delta.get("intent", 0))
+            )
 
             # 添加顾客消息
             customer_msg = Message(
@@ -166,6 +681,12 @@ async def chat(request: ChatRequest) -> dict:
             session_data["messages"].append(customer_msg.model_dump())
             new_messages.append(customer_msg.model_dump())
 
+        await update_session_progress(
+            session_data,
+            request.message,
+            customer_result["reply"] if customer_result is not None else None,
+        )
+
         # 保存会话
         session_manager.save(session_id, session_data)
 
@@ -173,7 +694,9 @@ async def chat(request: ChatRequest) -> dict:
             messages=new_messages,
             stage=session_data["stage"],
             dimensions=DimensionScores(**session_data["dimensions"]),
+            dimension_reasoning=await dimension_reasoning_response(session_data),
             status=session_data["status"],
+            customer_state=await customer_state_response(session_data),
         )
 
         return success(response.model_dump())
@@ -207,7 +730,9 @@ async def chat_continue(request: ChatContinueRequest) -> dict:
             messages=[],
             stage=session_data["stage"],
             dimensions=DimensionScores(**session_data["dimensions"]),
+            dimension_reasoning=await dimension_reasoning_response(session_data),
             status=session_data["status"],
+            customer_state=await customer_state_response(session_data),
         )
 
         return success(response.model_dump())
@@ -218,10 +743,10 @@ async def chat_continue(request: ChatContinueRequest) -> dict:
 
 
 @router.post("/finish")
-async def finish(request: dict) -> dict:
+async def finish(request: FinishRequest) -> dict:
     """结束会话，生成总结"""
     try:
-        session_id = request.get("session_id", "")
+        session_id = request.session_id
         logger.info(f"结束会话: {session_id}")
 
         # 加载会话
@@ -229,39 +754,43 @@ async def finish(request: dict) -> dict:
         if session_data is None:
             return error("会话不存在")
 
-        # 构建对话历史文本
+        profile = persona_context(session_data)
+        concerns_text = "、".join(profile_concerns(profile))
+        state = session_data.get("customer_state", {})
+
+        # 构建完整对话上下文
         history_text = "\n".join(
             f"[{msg['role']}] {msg['content']}" for msg in session_data["messages"]
         )
 
         # 调用 LLM 生成总结
-        prompt = SUMMARY_PROMPT.format(conversation_history=history_text)
-        result = await call_llm(prompt)
+        prompt = SUMMARY_PROMPT.format(
+            profile=json.dumps(profile, ensure_ascii=False),
+            conversation_history=history_text,
+            concerns=concerns_text,
+            addressed_concerns="、".join(state.get("addressed_concerns", [])) or "暂无",
+            current_stage=session_data.get("stage", "opening"),
+            customer_state=json.dumps(state, ensure_ascii=False),
+        )
+        result = await call_llm(
+            prompt,
+            session_id=session_id,
+            observation_name="session-summary",
+        )
 
-        if result is None:
-            return error("总结生成失败，请重试")
-
-        # 解析总结数据
-        parsed = json.loads(result)
+        parsed = {}
+        if result is not None:
+            try:
+                candidate = json.loads(result)
+                if isinstance(candidate, dict):
+                    parsed = candidate
+            except json.JSONDecodeError as exc:
+                logger.warning(f"总结 JSON 解析失败，使用动态兜底: {exc}")
 
         # 更新会话状态
         session_data["status"] = "completed"
         session_manager.save(session_id, session_data)
-
-        response = FinishResponse(
-            summary=parsed.get("summary", ""),
-            total_score=parsed.get("total_score", 0),
-            dimensions=parsed.get("dimensions", {}),
-            key_moments=parsed.get("key_moments", []),
-            champion_replay=parsed.get("champion_replay", {}),
-            status="completed",
-        )
-
-        return success(response.model_dump())
-
-    except json.JSONDecodeError as e:
-        logger.error(f"总结 JSON 解析失败: {str(e)}")
-        return error("总结数据格式错误")
+        return success(build_finish_response(parsed, session_data))
 
     except Exception as e:
         logger.error(f"结束会话失败: {str(e)}")
@@ -285,8 +814,12 @@ async def get_session(session_id: str) -> dict:
             messages=session_data["messages"],
             stage=session_data["stage"],
             dimensions=DimensionScores(**session_data["dimensions"]),
+            dimension_reasoning=await dimension_reasoning_response(session_data),
             status=session_data["status"],
             history=session_data.get("history", []),
+            customer_state=await customer_state_response(session_data),
+            ba_turn_count=session_data.get("ba_turn_count", 0),
+            persona_profile=session_data.get("persona_profile"),
         )
 
         return success(response.model_dump())
@@ -294,3 +827,153 @@ async def get_session(session_id: str) -> dict:
     except Exception as e:
         logger.error(f"获取会话失败: {str(e)}")
         return error(f"获取会话失败: {str(e)}")
+
+
+@router.post("/case-analysis")
+async def post_case_analysis(request: CaseAnalysisRequest) -> dict:
+    """案例复盘分析——BA 贴入叙述文字，并行调用两个 LLM：
+    1. 诊断+评分+关键时刻（轻量）
+    2. 销冠对话还原（重量）
+    理论耗时 ≈ max(两者)，而非两者之和。
+    """
+    try:
+        practice_id = f"practice_{uuid.uuid4()}"
+        logger.info(f"案例复盘分析: {practice_id}")
+
+        diagnosis_prompt = CASE_ANALYSIS_PROMPT.format(narrative=request.narrative)
+        champion_prompt = CASE_CHAMPION_REPLAY_PROMPT.format(narrative=request.narrative)
+
+        # 并行调用：诊断任务输出短（限 1000 token），销冠对话输出 3 轮（限 1100 token）
+        diagnosis_result, champion_result = await asyncio.gather(
+            call_llm(diagnosis_prompt, observation_name="case-diagnosis", max_tokens=1000),
+            call_llm(champion_prompt, observation_name="case-champion-replay", max_tokens=1100),
+        )
+
+        if diagnosis_result is None and champion_result is None:
+            return error("分析生成失败，请重试")
+
+        # 解析诊断结果（允许为空时降级）
+        parsed_diagnosis = {}
+        if diagnosis_result:
+            try:
+                parsed_diagnosis = json.loads(diagnosis_result)
+            except json.JSONDecodeError as e:
+                logger.warning(f"诊断 JSON 解析失败，使用降级值: {str(e)}")
+
+        # 解析销冠对话（允许为空时降级）
+        parsed_champion = {}
+        if champion_result:
+            try:
+                parsed_champion = json.loads(champion_result)
+            except json.JSONDecodeError as e:
+                logger.warning(f"销冠对话 JSON 解析失败，使用降级值: {str(e)}")
+
+        # 转换维度评分
+        dimensions_data = parsed_diagnosis.get("dimensions", {})
+        final_dimensions = FinalDimensions(
+            listening=DimensionWithReasoning(**dimensions_data.get("listening", {"score": 0, "reasoning": ""})),
+            warmth=DimensionWithReasoning(**dimensions_data.get("warmth", {"score": 0, "reasoning": ""})),
+            professionalism=DimensionWithReasoning(**dimensions_data.get("professionalism", {"score": 0, "reasoning": ""})),
+            objection_handling=DimensionWithReasoning(**dimensions_data.get("objection_handling", {"score": 0, "reasoning": ""})),
+            recommendation=DimensionWithReasoning(**dimensions_data.get("recommendation", {"score": 0, "reasoning": ""})),
+        )
+
+        # 转换关键时刻
+        key_moments_data = parsed_diagnosis.get("key_moments", [])
+        key_moments = [KeyMoment(**km) for km in key_moments_data]
+
+        # 转换销冠对比（优先用独立调用的结果，降级到诊断结果里的 champion_replay）
+        champion_replay_data = parsed_champion.get("champion_replay") or parsed_diagnosis.get("champion_replay", {})
+        rounds_data = champion_replay_data.get("rounds", [])
+        rounds = [ChampionRound(**r) for r in rounds_data]
+        champion_replay = ChampionReplay(
+            title=champion_replay_data.get("title", "销冠示范"),
+            rounds=rounds,
+        )
+
+        # 构建 key_issues（同时兼容 LLM 返回 key_issues 或 issues）
+        key_issues = parsed_diagnosis.get("key_issues") or parsed_diagnosis.get("issues") or []
+
+        # 保存 practice session，供后续对练使用
+        session_manager.create(practice_id, {
+            "practice_id": practice_id,
+            "narrative": request.narrative,
+            "analysis_summary": parsed_diagnosis.get("summary", ""),
+            "key_issues": key_issues,
+            "practice_history": [],
+            "practice_turns": 0,
+        })
+
+        data = CaseAnalysisData(
+            practice_id=practice_id,
+            summary=parsed_diagnosis.get("summary", ""),
+            key_issues=key_issues,
+            total_score=parsed_diagnosis.get("total_score", 0),
+            dimensions=final_dimensions,
+            key_moments=key_moments,
+            champion_replay=champion_replay,
+        )
+
+        return success(data.model_dump())
+
+    except Exception as e:
+        logger.error(f"案例分析失败: {str(e)}")
+        return error(f"案例分析失败: {str(e)}")
+
+
+@router.post("/case-practice")
+async def post_case_practice(request: CasePracticeRequest) -> dict:
+    """案例对练——BA 扮演顾客发消息，系统以销冠身份逐轮回复"""
+    try:
+        practice_id = request.practice_id
+        logger.info(f"案例对练: {practice_id}")
+
+        session_data = session_manager.load(practice_id)
+        if session_data is None:
+            return error("对练会话不存在，请先完成案例分析")
+
+        turns = session_data.get("practice_turns", 0)
+        if turns >= 10:
+            return error("对练已满 10 轮，请结束对练")
+
+        # 构建对练历史文本
+        practice_history = "\n".join(
+            f"[顾客] {h['customer_message']}\n[销冠] {h['champion_reply']}"
+            for h in session_data.get("practice_history", [])
+        )
+
+        prompt = CHAMPION_PRACTICE_PROMPT.format(
+            narrative=session_data["narrative"],
+            analysis_summary=session_data["analysis_summary"],
+            practice_history=practice_history if practice_history else "（尚无对话）",
+            customer_message=request.message,
+        )
+
+        result = await call_llm(prompt)
+
+        if result is None:
+            return error("对练回复生成失败，请重试")
+
+        parsed = json.loads(result)
+
+        # 记录本轮对练
+        session_data["practice_history"].append({
+            "customer_message": request.message,
+            "champion_reply": parsed.get("champion_reply", ""),
+        })
+        session_data["practice_turns"] = turns + 1
+        session_manager.save(practice_id, session_data)
+
+        data = CasePracticeData(
+            champion_reply=parsed.get("champion_reply", ""),
+        )
+
+        return success(data.model_dump())
+
+    except json.JSONDecodeError as e:
+        logger.error(f"对练 JSON 解析失败: {str(e)}")
+        return error("对练回复格式错误，请重试")
+
+    except Exception as e:
+        logger.error(f"对练失败: {str(e)}")
+        return error(f"对练失败: {str(e)}")
