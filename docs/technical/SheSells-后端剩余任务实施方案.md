@@ -1,12 +1,12 @@
 # SheSells 后端剩余任务实施方案
 
-> 状态：代码已实现，待配置真实 API Key 联调
+> 状态：✅ 代码已实现并验证（2026-07-17）
 >
 > 范围：环境变量、独立日志配置、三个 Prompt 模板、错误追踪器、顾客模拟器
 >
 > 实现基准：`backend/` 当前 Python 代码
 >
-> 参考资料：`docs/prompts.ts`、`docs/SheSells-初始化与Agent-Prompts.md`、`docs/SheSells-技术详设.md`
+> 参考资料：`docs/prompts.ts`（历史参考）、`docs/SheSells-初始化与Agent-Prompts.md`（历史文档）、`docs/SheSells-技术详设.md`
 
 ## 1. 目标
 

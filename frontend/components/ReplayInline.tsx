@@ -17,7 +17,7 @@ export function ReplayInline({ turns }: { turns: ReplayTurn[] }) {
     <div className="replay-block">
       <div className="replay-heading">
         <div><Crown size={17} /><span>销冠对比 · {turns.length} 个关键时刻</span></div>
-        <small>点击切换示范</small>
+        <small>点击下方轮次切换</small>
       </div>
 
       <div className="replay-tabs" role="tablist" aria-label="选择销冠示范关键时刻">
@@ -25,6 +25,7 @@ export function ReplayInline({ turns }: { turns: ReplayTurn[] }) {
           <button
             aria-pressed={index === activeIndex}
             className={index === activeIndex ? "is-active" : undefined}
+            style={{ cursor: "pointer" }}
             key={`${turn.turn}-${turn.scenario ?? "tab"}`}
             onClick={() => setActiveIndex(index)}
             type="button"

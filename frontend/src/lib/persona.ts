@@ -5,6 +5,27 @@ export const SKIN_TYPE_OPTIONS = ["油皮", "干皮", "混合皮"] as const;
 export const SENSITIVITY_OPTIONS = ["敏感肌", "非敏感肌"] as const;
 
 const storagePrefix = "shesells:persona:";
+const recordsKey = "shesells:sessionRecords";
+export interface SessionRecord {
+  sessionId: string;
+  displayLine: string;
+  createdAt: string;
+}
+export function saveSessionRecord(sessionId: string, displayLine: string) {
+  try {
+    const raw = localStorage.getItem(recordsKey);
+    const records: SessionRecord[] = raw ? JSON.parse(raw) : [];
+    const filtered = records.filter((r) => r.sessionId !== sessionId);
+    filtered.unshift({ sessionId, displayLine, createdAt: new Date().toISOString() });
+    localStorage.setItem(recordsKey, JSON.stringify(filtered.slice(0, 15)));
+  } catch { /* ignore */ }
+}
+export function getSessionRecords(): SessionRecord[] {
+  try {
+    const raw = localStorage.getItem(recordsKey);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
 
 const personaNameByAge: Record<string, string> = {
   "18-25岁": "小林",

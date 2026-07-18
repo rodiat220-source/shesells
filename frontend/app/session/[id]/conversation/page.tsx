@@ -28,8 +28,8 @@ export default function ConversationReviewPage({ params }: { params: Promise<{ i
   const conversationMessages = useMemo(() => {
     return messages.filter((message) => message.coachType !== "summary" && message.coachType !== "champion_replay");
   }, [messages]);
-  const baReplyCount = conversationMessages.filter((message) => message.role === "ba").length;
-  const coachHintCount = conversationMessages.filter((message) => message.role === "coach").length;
+  const baReplyCount = conversationMessages.filter((m) => m.role === "ba").length;
+  const haltCount = conversationMessages.filter((m) => m.role === "coach" && (m.coachType === "halt" || m.coachType === "halt_with_champion")).length;
 
   useEffect(() => {
     if (conversationMessages.length === 0 || !window.location.hash) return;
@@ -55,7 +55,7 @@ export default function ConversationReviewPage({ params }: { params: Promise<{ i
           <p>{persona ? `本次顾客画像：${persona.displayLine}。` : "这里复现本次训练中的顾客、销售顾问和教练提示，按真实发生顺序完整呈现。"}</p>
           <div className="conversation-review-meta">
             <div><strong>{baReplyCount}</strong><span>BA 回复</span></div>
-            <div><strong>{coachHintCount}</strong><span>教练提示</span></div>
+            <div><strong>{haltCount}</strong><span>停一下</span></div>
           </div>
         </aside>
 

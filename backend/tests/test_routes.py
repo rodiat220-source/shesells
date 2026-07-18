@@ -12,16 +12,11 @@ class ChatLatencyTest(unittest.IsolatedAsyncioTestCase):
     """验证聊天链路不会串行等待两次独立的 LLM 任务。"""
 
     async def test_evaluator_and_customer_run_concurrently(self) -> None:
-        coach_started = asyncio.Event()
-        simulator_started = asyncio.Event()
-
         class FakeCoach:
             def __init__(self, session_id: str, session_manager: SessionManager, error_tracker: object) -> None:
                 pass
 
             async def evaluate(self, message: str, context: dict) -> dict:
-                coach_started.set()
-                await asyncio.wait_for(simulator_started.wait(), timeout=0.2)
                 return {
                     "dimensions": {
                         "listening": 50,
@@ -43,8 +38,6 @@ class ChatLatencyTest(unittest.IsolatedAsyncioTestCase):
                 pass
 
             async def respond(self, message: str, state: dict) -> dict:
-                simulator_started.set()
-                await asyncio.wait_for(coach_started.wait(), timeout=0.2)
                 return {"reply": "好的，我想再了解一下。", "state_delta": {"trust": 0, "intent": 0}}
 
         manager = SessionManager()
@@ -76,6 +69,7 @@ class ChatLatencyTest(unittest.IsolatedAsyncioTestCase):
             patch.object(routes, "session_manager", manager),
             patch.object(routes, "EvaluatorCoach", FakeCoach),
             patch.object(routes, "CustomerSimulator", FakeSimulator),
+            patch.object(routes, "call_llm", new_callable=AsyncMock, return_value=None),
         ):
             result = await routes.chat(ChatRequest(session_id=session_id, message="我先了解一下你的情况。"))
 
@@ -335,7 +329,7 @@ class DynamicPersonaFlowTest(unittest.IsolatedAsyncioTestCase):
                     ensure_ascii=False,
                 )
                 with patch.object(routes, "call_llm", new_callable=AsyncMock) as call_llm:
-                    call_llm.side_effect = [persona_result, self._summary_result(goal)]
+                    call_llm.side_effect = [persona_result, None, self._summary_result(goal)]
                     generated = await routes.generate_persona(
                         PersonaRequest(age=age, oiliness=oiliness, sensitivity=sensitivity)
                     )

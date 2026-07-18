@@ -7,15 +7,18 @@ import {
   BookOpen,
   Check,
   MessageCircleHeart,
+  Megaphone,
+  MessageCircle,
   ShieldCheck,
   Sparkles,
+  Trophy,
 } from "lucide-react";
 
 export default function Home() {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [pendingTarget, setPendingTarget] = useState<string | null>(null);
-
+  
   function navigate(path: string) {
     if (isPending) return; // 防抖：跳转进行中忽略后续点击
     setPendingTarget(path);
@@ -75,9 +78,9 @@ export default function Home() {
           </div>
 
           <div className="trust-row" aria-label="训练特色">
-            <span><Check size={14} />真实顾客反应</span>
-            <span><Check size={14} />即时教练反馈</span>
-            <span><Check size={14} />销冠案例对比</span>
+            <span><MessageCircle size={14} />真实顾客反应</span>
+            <span><Megaphone size={14} />即时教练反馈</span>
+            <span><Trophy size={14} />销冠案例对比</span>
           </div>
         </div>
 
@@ -138,7 +141,7 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="feature-strip" aria-label="教练能力">
+            <section className="feature-strip" aria-label="教练能力">
         <div><span>01</span><strong>主动追问</strong><p>遗漏关键需求时，教练引导你重新思考。</p></div>
         <div><span>02</span><strong>关键喊停</strong><p>连续错过顾虑时，及时暂停并给出方向。</p></div>
         <div><span>03</span><strong>销冠对比</strong><p>训练结束后，看优秀顾问如何接住信号。</p></div>

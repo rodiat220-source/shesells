@@ -1,5 +1,8 @@
 # 提示词模板文件 - 存放所有 LLM Prompt 模板
 
+ 
+ 
+ 
 
 # 顾客模拟器 Prompt
 # 用途：让 LLM 按当前画像扮演顾客，根据 BA 的消息生成顾客回复
@@ -58,13 +61,22 @@ EVALUATOR_COACH_PROMPT = """
 【BA 本轮回复】
 {ba_message}
 
+【上一轮教练建议】
+{last_coach_advice}
+
+【跨轮一致性铁律】
+- 如果"上一轮教练建议"非空，说明 BA 本轮是在执行你上轮给出的建议。
+- BA 按上轮建议做出的动作，**不得作为本轮打断或扣分依据**，只能正向反馈。
+- 只有 BA 出现了与上轮建议无关的新问题时，才可以打断或扣分。
+- 上轮建议被执行后，本轮视为已解决，不得再以同类理由重复打断。
+
 【评分维度】
 - listening：是否主动探询并理解需求。
 - warmth：是否真诚、有同理心。
 - professionalism：当前阶段的信息是否完整、方案是否专业准确。
 - objection_handling：是否回应顾客顾虑。
 - recommendation：推荐时机和方案是否匹配。
-- 每项分数必须输出 score（0-100 整数）和 reasoning。reasoning 依次用【观察】【对比】【原因】【标杆】各写一句，合计控制在 120 字以内。
+- 每项必须输出 score(0-100)、status(excellent/good/needs_improvement/poor)、summary(一句话总结)、reasoning(包含 observation、comparison、reason、benchmark 四个子字段)。
 
 【教练决策】
 - probe：信息不足就推荐，或回复过于浅层。
@@ -78,11 +90,11 @@ EVALUATOR_COACH_PROMPT = """
 只输出合法 JSON，不要输出 Markdown 或解释：
 {{
   "dimensions": {{
-    "listening": {{"score": 70, "reasoning": "【观察】...【对比】...【原因】...【标杆】..."}},
-    "warmth": {{"score": 70, "reasoning": "【观察】...【对比】...【原因】...【标杆】..."}},
-    "professionalism": {{"score": 70, "reasoning": "【观察】...【对比】...【原因】...【标杆】..."}},
-    "objection_handling": {{"score": 70, "reasoning": "【观察】...【对比】...【原因】...【标杆】..."}},
-    "recommendation": {{"score": 70, "reasoning": "【观察】...【对比】...【原因】...【标杆】..."}}
+    "listening": {{"score": 70, "status": "good", "summary": "一句话总结", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}},
+    "warmth": {{"score": 70, "status": "good", "summary": "一句话总结", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}},
+    "professionalism": {{"score": 70, "status": "good", "summary": "一句话总结", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}},
+    "objection_handling": {{"score": 70, "status": "good", "summary": "一句话总结", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}},
+    "recommendation": {{"score": 70, "status": "good", "summary": "一句话总结", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}}
   }},
   "decision": "none",
   "coach_message": "",
@@ -108,6 +120,34 @@ SELF_CHECKER_PROMPT = """
 {{
   "approved": false,
   "revised_message": "先认可，再给一个可执行改进方向。"
+}}
+"""
+
+
+# 打断专项校验 Prompt
+# 用途：halt 状态下 BA 修改重发时，只判断原 halt 问题是否解决，不做全量评估
+# 占位符：{halt_issue_description} 原次打断问题描述, {ba_new_message} BA 修改后的新消息, {concerns} 顾客顾虑
+HALT_CHECK_PROMPT = """
+你是美妆零售销售教练。BA 之前被打断，现在提交了修改后的回应。你只需判断：**BA 的新回应是否解决了之前被打断的那个具体问题**。
+
+【上次被打断的具体问题】
+{halt_issue_description}
+
+【顾客核心顾虑】
+{concerns}
+
+【BA 修改后的新回应】
+{ba_new_message}
+
+判断规则：
+- 只看"上次被打断的问题"是否被解决，不要引入任何新问题、不要做全量评估。
+- 解决 = BA 的新回应针对该问题做出了明显改进（如：之前忽略顾虑，现在回应了；之前没探询，现在探询了）。
+- 未解决 = BA 的新回应仍然存在同一个问题，或只是话术微调没有实质改进。
+
+只输出合法 JSON：
+{{
+  "resolved": true,
+  "feedback": "认可改进点，一句话。未解决时给出同一问题的再提示，不超过 60 字。"
 }}
 """
 
@@ -139,19 +179,19 @@ SUMMARY_PROMPT = """
 1. 五个维度分别给出 0-100 的整数分数和简短依据。
 2. total_score 为五个维度分数的整数平均值。
 3. 提取关键表现，type 只能是 good 或 missed。
-4. 选择最值得改进的一轮，给出真实顾客消息、BA 原回复和销冠示范回复。销冠回复必须围绕当前画像的 goal 和 concerns。
-5. 即使对话较短，champion_replay 也必须包含 title 和至少一轮 rounds。
+4. 选择最值得改进的三轮（按对话轮次顺序尽可能覆盖不同阶段），每轮分别给出真实顾客消息、BA 原回复和销冠示范回复。销冠回复必须围绕当前画像的 goal 和 concerns。
+5. 即使对话较短，champion_replay 也必须包含 title 和至少三轮 rounds。
 
 只输出合法 JSON，不要输出 Markdown 或解释：
 {{
   "summary": "总体评价",
   "total_score": 70,
   "dimensions": {{
-    "listening": {{"score": 70, "reasoning": "评分依据"}},
-    "warmth": {{"score": 70, "reasoning": "评分依据"}},
-    "professionalism": {{"score": 70, "reasoning": "评分依据"}},
-    "objection_handling": {{"score": 70, "reasoning": "评分依据"}},
-    "recommendation": {{"score": 70, "reasoning": "评分依据"}}
+    "listening": {{"score": 70, "status": "good", "summary": "一句话总结", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}},
+    "warmth": {{"score": 70, "status": "good", "summary": "一句话总结", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}},
+    "professionalism": {{"score": 70, "status": "good", "summary": "一句话总结", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}},
+    "objection_handling": {{"score": 70, "status": "good", "summary": "一句话总结", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}},
+    "recommendation": {{"score": 70, "status": "good", "summary": "一句话总结", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}}
   }},
   "key_moments": [
     {{"turn": 1, "description": "关键表现", "type": "good"}}
@@ -176,75 +216,61 @@ SUMMARY_PROMPT = """
 # 用途：分析 BA 叙述的失败案例，输出问题诊断、五维评分、关键时刻、销冠对比
 # 占位符：{narrative} BA 语音转文字叙述
 CASE_ANALYSIS_PROMPT = """
-你是一位资深美妆零售培训师。一位 BA 描述了她觉得能成交但失败的案例。
-请分析以下叙述，完成三件事：
-1. 指出 BA 犯的关键错误（3-5条，每条一句）
-2. 五维评分（listening/warmth/professionalism/objection_handling/recommendation，每项 0-100 整数，含推理链）
-3. 把隐含的对话还原为完整对话，给出销冠的优化版本
+你是资深美妆零售培训师。分析下面 BA 描述的失败案例，输出诊断和评分。
 
-关键约束：
-- BA 的叙述是不正式的、口语化的，可能是语音转文字（会有错别字和口语）。
-- 先提取隐含的对话结构（"BA 说了什么" → "顾客有什么反应"），再评估。
-- 销冠版本基于同一个场景重写，不只修补原话，而是展现"如果我是销冠会怎么聊"。
-- 选择表现差距最大的 3 轮做 champion_replay。
-- key_issues 每条一句，直接指出问题。
+约束：
+- key_issues：3 条，每条一句直指问题。
+- reasoning：每项不超过 20 字。
+- key_moments：必须输出 3 个最关键的。
+- summary：60 字以内。
 
 【BA 的叙述】
 {narrative}
 
-只输出合法 JSON，不要输出 Markdown 或解释：
+只输出合法 JSON：
 {{
-  "summary": "总体分析（100字以内）",
-  "key_issues": ["关键错误1", "关键错误2", "关键错误3"],
+  "summary": "总体分析（60字内）",
+  "key_issues": ["问题1", "问题2", "问题3"],
   "total_score": 45,
   "dimensions": {{
-    "listening": {{"score": 40, "reasoning": "评分依据"}},
-    "warmth": {{"score": 50, "reasoning": "评分依据"}},
-    "professionalism": {{"score": 45, "reasoning": "评分依据"}},
-    "objection_handling": {{"score": 35, "reasoning": "评分依据"}},
-    "recommendation": {{"score": 55, "reasoning": "评分依据"}}
+    "listening": {{"score": 40, "status": "good", "summary": "一句话", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}},
+    "warmth": {{"score": 50, "status": "good", "summary": "一句话", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}},
+    "professionalism": {{"score": 45, "status": "good", "summary": "一句话", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}},
+    "objection_handling": {{"score": 35, "status": "good", "summary": "一句话", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}},
+    "recommendation": {{"score": 55, "status": "good", "summary": "一句话", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}}
   }},
   "key_moments": [
-    {{"turn": 1, "description": "关键时刻描述", "type": "missed"}}
-  ],
-  "champion_replay": {{
-    "title": "销冠示范",
-    "rounds": [
-      {{
-        "turn": 1,
-        "ba_reply": "BA 当时的处理",
-        "champion_reply": "销冠 BA 更好的回应",
-        "skill_tags": ["共情", "探询"]
-      }}
-    ]
-  }}
+    {{"turn": 1, "description": "关键时刻", "type": "missed"}},
+    {{"turn": 2, "description": "关键时刻", "type": "missed"}},
+    {{"turn": 3, "description": "关键时刻", "type": "missed"}}
+  ]
 }}
 """
 
 
-# 案例销冠对比 Prompt
-# 用途：从案例叙述还原关键回合，并生成销冠示范
-# 占位符：{narrative} BA 语音转文字叙述
+# 销冠对话还原 Prompt（与 CASE_ANALYSIS_PROMPT 并行调用）
+# 用途：基于同一案例叙述，独立生成销冠优化版对话，避免与诊断评分串行等待
+# 占位符：{narrative} BA 的原始案例叙述
 CASE_CHAMPION_REPLAY_PROMPT = """
-你是一位美妆零售销冠 BA。请根据以下失败案例，还原 2-3 个最关键的对话回合，并给出更好的销冠回应。
+你是美妆零售销冠 BA。下面是 BA 描述的失败案例，请选出差距最大的 3 轮，给出销冠优化版本。
+
+约束：
+- 必须输出 3 轮（turn 1、2、3），不要 2 轮。
+- ba_reply：从叙述中提取 BA 原话，不超过 30 字。
+- champion_reply：销冠重写版本，口语化，不超过 45 字。
+- skill_tags：最多 2 个标签。
 
 【BA 的叙述】
 {narrative}
-
-每一轮保留顾客原话、BA 当时的处理、销冠回应和技巧标签。销冠回应先接住顾客顾虑，再推进下一步沟通。
 
 只输出合法 JSON：
 {{
   "champion_replay": {{
     "title": "销冠示范",
     "rounds": [
-      {{
-        "turn": 1,
-        "customer_message": "顾客当时的原话",
-        "ba_reply": "BA 当时的处理",
-        "champion_reply": "销冠 BA 更好的回应",
-        "skill_tags": ["共情", "探询"]
-      }}
+      {{"turn": 1, "ba_reply": "BA原话（30字内）", "champion_reply": "销冠回应（45字内）", "skill_tags": ["共情"]}},
+      {{"turn": 2, "ba_reply": "BA原话（30字内）", "champion_reply": "销冠回应（45字内）", "skill_tags": ["探询"]}},
+      {{"turn": 3, "ba_reply": "BA原话（30字内）", "champion_reply": "销冠回应（45字内）", "skill_tags": ["推荐"]}}
     ]
   }}
 }}
@@ -314,3 +340,48 @@ PERSONA_GENERATOR_PROMPT = """
   "initial_message": "顾客开场白"
 }}
 """
+ 
+# 教练自省 Prompt
+# 用途：每轮评估后，让教练回顾自己的评分是否合理，最多允许 ±5 调整
+# 占位符：{ba_message} BA本轮回复, {current_scores} 当前分数JSON, {current_reasoning} 当前评分依据JSON, {coach_style} 教练风格
+COACH_SELF_REVIEW_PROMPT = """
+你是一位美妆零售AI销售教练。请回顾你刚才给BA的评分，判断是否合理。
+ 
+【BA本轮回复】
+{ba_message}
+ 
+【你刚给出的分数】
+{current_scores}
+ 
+【你刚给出的评分依据】
+{current_reasoning}
+ 
+【教练风格】
+当前风格：{coach_style}
+- strict：严格评审，仔细检查BA是否完整回应了顾客顾虑
+- gentle：友善评审，更关注BA的积极动作
+ 
+评审规则：
+1. 逐项判断score是否需要调整，最多允许±5分
+2. 仅在理由充分时调整
+3. 调整后必须更新对应reasoning
+4. 如果所有分数都合理，dimensions 字段与输入一致即可
+ 
+【约束】所有教练评分和建议引用的顾客顾虑/需求/症状，必须可以在 ba_message 和已有对话上下文中找到原文依据。不得引用顾客未明确提及的内容。
+
+只输出合法JSON，不要输出Markdown或解释：
+{{
+  "reviewed": true,
+  "dimensions": {{
+    "listening": {{"score": 70, "status": "good", "summary": "一句话", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}},
+    "warmth": {{"score": 70, "status": "good", "summary": "一句话", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}},
+    "professionalism": {{"score": 70, "status": "good", "summary": "一句话", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}},
+    "objection_handling": {{"score": 70, "status": "good", "summary": "一句话", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}},
+    "recommendation": {{"score": 70, "status": "good", "summary": "一句话", "reasoning": {{"observation": "...", "comparison": "...", "reason": "...", "benchmark": "..."}}}}
+  }}
+}}
+"""
+ 
+ 
+ 
+ 

@@ -1,5 +1,7 @@
 # SheSells —— 后端文档阅读指南
 
+> 更新：2026-07-18 — 后端已切换为 Python FastAPI。本文档为规划时期的阅读顺序指南，文件引用已更新为 Python 代码路径。
+>
 > 写给后端开发：时间紧，这篇告诉你 10 个文件先看哪个、哪个可以跳过、遇到问题查哪个。
 > 写于 2026-07-13
 
@@ -24,7 +26,7 @@
 
 | 顺序 | 文件 | 重点读哪些部分 | 时间 |
 |:--:|------|--------------|:--:|
-| **1** | `SheSells-技术详设.md` | **全文**，这是你的施工图纸 | 10min |
+| **1** | `SheSells-技术详设.md` | **全文**，这是你的施工图纸（已更新为 Python 后端） | 10min |
 | **2** | `SheSells-AI销售教练-项目规划.md` | 第四、五章（Demo 聚焦 + 技术架构），第六章（5天计划），其余可扫读 | 5min |
 
 **为什么这两个最先看：**
@@ -35,7 +37,7 @@
 
 | 顺序 | 文件 | 用途 | 何时用 |
 |:--:|------|------|------|
-| **3** | `prompts.ts` | 直接 import 的 prompt 构建函数 | **写 EvaluatorCoach 和 CustomerSimulator 时直接 import** |
+| **3** | `backend/app/prompts/templates.py` | Prompt 模板（`prompts.ts` 已迁移到 Python） | **写 EvaluatorCoach 和 CustomerSimulator 时直接 import** |
 | **4** | `SheSells-AI创新设计.md` | **三个 AI 创新的完整实现方案**：SelfChecker / ErrorPatternTracker / CoT Evaluation | **Day 3-4 实现创新点时必须看** |
 | **5** | `SheSells-执行规划.md` | Day 3-5 具体要做哪些代码改动 | **Day 3 开始动手前看一遍** |
 | **6** | `SheSells-教练消息库.md` | 教练消息模板，写 prompt 里的 few-shot 时照抄 | **调 prompt 调不出来时查** |
@@ -53,7 +55,7 @@
 | 文件 | 原因 |
 |------|------|
 | `SheSells-初始化与Agent-Prompts.md` | Day 1 初始化 prompt，已经用过了，现在是历史文档 |
-| `SheSells-Agent-Prompts-FewShot.md` | 对应 `prompts.ts` 的设计说明，代码已经有注释了 |
+| `SheSells-Agent-Prompts-FewShot.md` | 对应 `prompts.ts` 的设计说明，代码已经有注释了；`prompts.ts` 已不再使用 |
 
 ---
 
@@ -63,9 +65,9 @@
 
 | 章节 | 内容 | 后端相关度 |
 |------|------|:--:|
-| 一、技术选型 | Next.js + Vercel AI SDK + KV + 国产 LLM | 必读 |
+| 一、技术选型 | Python FastAPI + httpx | 必读 |
 | 二、系统架构 | Agent Core 4 模块关系图 | 必读 |
-| **三、数据模型** | `Session`、`Message`、`CustomerState`、`CoachDecision`、`Dimensions`、`CriticalMoment`、`ReplayTurn`、`Product`、`SOPRule` — **所有 TypeScript 类型定义都在这** | **最重要** |
+| **三、数据模型** | `Session`、`Message`、`CustomerState`、`CoachDecision`、`Dimensions`、`CriticalMoment`、`ReplayTurn`、`Product`、`SOPRule` — **所有类型定义都在这** | **最重要** |
 | **四、接口定义** | `POST /api/session`、`POST /api/chat`、`POST /api/finish`、`GET /api/session/{id}` — Request/Response schema | **最重要** |
 | 五、Agent Core 设计 | CustomerSimulator / EvaluatorCoach / SalesStateMachine / CoachEngine 的伪代码和调用流 | 必读 |
 | 六、实现优先级 | Phase 1-3 的交付列表 | 参考 |
@@ -89,15 +91,17 @@
 
 ---
 
-### 🔴 `prompts.ts` — 可直接运行的 Prompt 代码
+### 🔴 `backend/app/prompts/templates.py` — 可直接运行的 Prompt 模板
+
+> ⚠️ `prompts.ts` 已不再使用，Prompts 已迁移到 `backend/app/prompts/templates.py`（Python）。
 
 | 函数 | 用途 | 状态 |
 |------|------|:--:|
-| `formatConversationHistory()` | 消息数组 → 格式化文本 | 完成 |
-| `buildCustomerSimulatorPrompt()` | 顾客模拟 prompt，含 3 个 few-shot | 完成，Day 3 需补阻力信号 |
-| `buildEvaluatorCoachPrompt()` | 评估+教练合并 prompt，含 3 个 few-shot | 完成，Day 3-4 需补权重/语调/喊停规则 |
+| `format_conversation_history()` | 消息数组 → 格式化文本 | 完成 |
+| `build_customer_simulator_prompt()` | 顾客模拟 prompt，含 3 个 few-shot | 完成，Day 3 需补阻力信号 |
+| `build_evaluator_coach_prompt()` | 评估+教练合并 prompt，含 3 个 few-shot | 完成，Day 3-4 需补权重/语调/喊停规则 |
 
-**一句话：这是你最重要的代码文件。`import { buildCustomerSimulatorPrompt, buildEvaluatorCoachPrompt } from './prompts'` 就是你的 LLM 调用入口。**
+**一句话：这是你最重要的代码文件。`from app.prompts.templates import build_customer_simulator_prompt, build_evaluator_coach_prompt` 就是你的 LLM 调用入口。**
 
 ---
 
@@ -137,7 +141,7 @@
 
 | 章节 | 内容 | 什么时候查 |
 |------|------|-----------|
-| 一、Probe 追问模板 | 3 类场景（跳过探询/回复过简/未追信号）× 多种上下文 | 调 `buildEvaluatorCoachPrompt` 的 few-shot 时照抄 |
+| 一、Probe 追问模板 | 3 类场景（跳过探询/回复过简/未追信号）× 多种上下文 | 调 `build_evaluator_coach_prompt` 的 few-shot 时照抄 |
 | 二、Halt 喊停模板 | 3 类错误 × 完整三步法指导消息 | 喊停消息太生硬时参考 |
 | 三、Feedback 反馈模板 | 正向肯定 + 温和提醒 | 教练反馈太冰冷时参考 |
 | 四、Summary 总结模板 | 完整评分+对比+收尾消息结构 | 写 SummaryEvaluator prompt 时参考 |
@@ -168,8 +172,8 @@
 | 问题 | 查哪个文档 | 重点章节 |
 |------|-----------|---------|
 | "API 接口的 request/response 格式是什么？" | `技术详设.md` | 第四章 |
-| "Session、Message、CoachDecision 的类型定义在哪？" | `技术详设.md` | 第三章 |
-| "EvaluatorCoach prompt 怎么调？" | `prompts.ts` + `教练消息库.md` | `prompts.ts` 的 `buildEvaluatorCoachPrompt`；`教练消息库.md` 第五章的语调注入片段 |
+| "Session、Message、CoachDecision 的类型定义在哪？" | `技术详设.md` 或 `backend/app/api/schemas.py` | 第三章 / Pydantic 模型 |
+| "EvaluatorCoach prompt 怎么调？" | `backend/app/prompts/templates.py` + `教练消息库.md` | `templates.py` 的 `build_evaluator_coach_prompt`；`教练消息库.md` 第五章的语调注入片段 |
 | "5 个维度的权重是多少？" | `执行规划.md` | 第二章 2.1 节 |
 | "喊停/追问的触发条件对不对？" | `执行规划.md` | 第三章 3.1/3.2 节 + `方法论提炼.md` 第四章 |
 | "顾客模拟器应该输出什么顾虑？" | `执行规划.md` | 第二章 2.3 节（阻力信号列表） |
@@ -189,7 +193,7 @@
 
 ```
 第 1 步（15min）：技术详设.md 第三章 + 第四章 → 确认数据模型和 API 契约没有忘
-第 2 步（10min）：prompts.ts 全文件扫一遍 → 确认两个 build 函数的输入输出
+第 2 步（10min）：prompts.ts → backend/app/prompts/templates.py 全文件扫一遍 → 确认两个 build 函数的输入输出
 第 3 步（15min）：执行规划.md 第一章 + 第二章 + AI创新设计.md 第六章 → 知道今天要改什么、加什么、优先做哪个创新
 第 4 步（10min）：教练消息库.md 第五章 → 复制教练语调 Prompt 到代码里
 第 5 步（开始写代码）：
@@ -210,7 +214,7 @@
     │
     ├──→ 技术详设.md（施工图纸：类型 + API + 架构）
     │       │
-    │       ├──→ prompts.ts（可执行代码）
+    │       ├──→ backend/app/prompts/templates.py（Prompt 模板，原 prompts.ts 已废弃）
     │       │       │
     │       │       └──→ 教练消息库.md（prompt few-shot 素材）
     │       │
@@ -233,4 +237,4 @@
 
 ---
 
-_整理日期：2026-07-13_
+_整理日期：2026-07-18_

@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -7,7 +8,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from app.core.llm_client import call_llm
 from app.core.session_manager import SessionManager
 from app.agents.error_tracker import ErrorTracker
-from app.prompts.templates import EVALUATOR_COACH_PROMPT, SELF_CHECKER_PROMPT
+from app.prompts.templates import EVALUATOR_COACH_PROMPT, SELF_CHECKER_PROMPT, HALT_CHECK_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -24,15 +25,9 @@ class DimensionScore(BaseModel):
     """单维实时评分及依据。"""
 
     score: int = Field(ge=0, le=100)
-    reasoning: str
+    reasoning: dict = Field(default_factory=dict)
 
-    @field_validator("reasoning")
-    @classmethod
-    def validate_reasoning(cls, value: str) -> str:
-        """确保实时评分依据包含四步。"""
-        if not all(marker in value for marker in ("【观察】", "【对比】", "【原因】", "【标杆】")):
-            raise ValueError("评分依据必须包含观察、对比、原因和标杆")
-        return value
+
 
 
 class EvaluatorDimensions(BaseModel):
@@ -60,13 +55,20 @@ class SelfCheckResult(BaseModel):
     approved: bool
     revised_message: str = ""
 
+
+class HaltCheckResult(BaseModel):
+    """打断专项校验结果。"""
+
+    resolved: bool
+    feedback: str = ""
+
 # LLM 调用失败时的降级数据
 FALLBACK_DIMENSION_REASONING = {
-    "listening": {"score": 50, "reasoning": "【观察】模型未给出有效评分依据。【对比】无法完整对照当前阶段。【原因】本轮使用降级评分。【标杆】下一轮先收集关键信息。"},
-    "warmth": {"score": 50, "reasoning": "【观察】模型未给出有效评分依据。【对比】无法完整对照当前阶段。【原因】本轮使用降级评分。【标杆】下一轮先回应顾客感受。"},
-    "professionalism": {"score": 50, "reasoning": "【观察】模型未给出有效评分依据。【对比】无法完整对照当前阶段。【原因】本轮使用降级评分。【标杆】下一轮按阶段补全信息。"},
-    "objection_handling": {"score": 50, "reasoning": "【观察】模型未给出有效评分依据。【对比】无法完整对照当前阶段。【原因】本轮使用降级评分。【标杆】下一轮先接住顾客顾虑。"},
-    "recommendation": {"score": 50, "reasoning": "【观察】模型未给出有效评分依据。【对比】无法完整对照当前阶段。【原因】本轮使用降级评分。【标杆】下一轮确认需求后再推荐。"},
+    "listening": {"score": 50, "status": "needs_improvement", "summary": "", "reasoning": {"observation": "模型未给出有效评分依据", "comparison": "无法完整对照当前阶段", "reason": "本轮使用降级评分", "benchmark": "下一轮先收集关键信息"}},
+    "warmth": {"score": 50, "status": "needs_improvement", "summary": "", "reasoning": {"observation": "模型未给出有效评分依据", "comparison": "无法完整对照当前阶段", "reason": "本轮使用降级评分", "benchmark": "下一轮先回应顾客感受。"}},
+    "professionalism": {"score": 50, "status": "needs_improvement", "summary": "", "reasoning": {"observation": "模型未给出有效评分依据", "comparison": "无法完整对照当前阶段", "reason": "本轮使用降级评分", "benchmark": "下一轮按阶段补全信息。"}},
+    "objection_handling": {"score": 50, "status": "needs_improvement", "summary": "", "reasoning": {"observation": "模型未给出有效评分依据", "comparison": "无法完整对照当前阶段", "reason": "本轮使用降级评分", "benchmark": "下一轮先接住顾客顾虑。"}},
+    "recommendation": {"score": 50, "status": "needs_improvement", "summary": "", "reasoning": {"observation": "模型未给出有效评分依据", "comparison": "无法完整对照当前阶段", "reason": "本轮使用降级评分", "benchmark": "下一轮确认需求后再推荐。"}},
 }
 
 FALLBACK_RESULT = {
@@ -86,6 +88,26 @@ FALLBACK_RESULT = {
     },
     "detected_errors": [],
 }
+
+
+
+def _convert_dimensions(dimensions: dict) -> dict:
+    """将旧格式 reasoning 字符串转换为 dict 格式"""
+    if not dimensions or not isinstance(dimensions, dict):
+        return {}
+    for name in list(dimensions.keys()):
+        dim = dimensions.get(name)
+        if not isinstance(dim, dict):
+            continue
+        if isinstance(dim.get("reasoning"), str):
+            text = dim["reasoning"]
+            dim["reasoning"] = {
+                "observation": (re.search(r"【观察】([^【]*)", text) or [None, ""])[1].strip(),
+                "comparison": (re.search(r"【对比】([^【]*)", text) or [None, ""])[1].strip(),
+                "reason": (re.search(r"【原因】([^【]*)", text) or [None, ""])[1].strip(),
+                "benchmark": (re.search(r"【标杆】([^【]*)", text) or [None, ""])[1].strip(),
+            }
+    return dimensions
 
 
 class EvaluatorCoach:
@@ -113,7 +135,7 @@ class EvaluatorCoach:
 
         Args:
             ba_message: BA 最新消息
-            context: 上下文（含 stage, concerns）
+            context: 上下文（含 stage, concerns, last_coach_advice）
 
         Returns:
             {
@@ -124,6 +146,8 @@ class EvaluatorCoach:
         """
         try:
             profile = context.get("persona_profile") or context.get("customer_profile") or {}
+            last_advice = context.get("last_coach_advice") or "（无上轮建议）"
+            coach_style = context.get("coach_style", "gentle")
             prompt = EVALUATOR_COACH_PROMPT.format(
                 profile=json.dumps(profile, ensure_ascii=False),
                 ba_message=ba_message,
@@ -131,6 +155,8 @@ class EvaluatorCoach:
                 stage=context.get("stage", "opening"),
                 state=json.dumps(context.get("customer_state", {}), ensure_ascii=False),
                 history=context.get("conversation_history", "暂无历史对话"),
+                last_coach_advice=last_advice,
+                coach_style=coach_style,
             )
 
             logger.info(f"[{self.session_id}] 评估教练调用 LLM")
@@ -149,15 +175,20 @@ class EvaluatorCoach:
             parsed = json.loads(result)
             if not isinstance(parsed, dict):
                 raise ValueError("EvaluatorCoach 输出必须是 JSON 对象")
+            if "dimensions" in parsed and isinstance(parsed["dimensions"], dict):
+                parsed["dimensions"] = _convert_dimensions(parsed["dimensions"])
             raw_error_type = parsed.get("error_type")
             if raw_error_type == "null":
                 raw_error_type = None
+            # Merge dimensions: only use LLM dict values, keep fallback for non-dict (integer/old format)
+            parsed_dims = parsed.get("dimensions") or {}
+            merged_dims = {
+                **FALLBACK_DIMENSION_REASONING,
+                **{k: v for k, v in parsed_dims.items() if isinstance(v, dict)},
+            }
             validated = EvaluatorResult.model_validate(
                 {
-                    "dimensions": {
-                        **FALLBACK_DIMENSION_REASONING,
-                        **(parsed.get("dimensions") or {}),
-                    },
+                    "dimensions": merged_dims,
                     "decision": parsed.get("decision", "none"),
                     "coach_message": parsed.get("coach_message", ""),
                     "error_type": raw_error_type,
@@ -173,6 +204,10 @@ class EvaluatorCoach:
                 detected_errors.append(error_type)
                 level = await self.error_tracker.track(error_type, self.session_id)
                 logger.info(f"[{self.session_id}] 错误升级级别: {level}")
+                # 温和模式：首次错误降级为 none，不打断对话
+                if coach_style == "gentle" and level == "probe":
+                    level = "none"
+                    logger.info(f"[{self.session_id}] 温和模式，首次错误降级为 none")
 
             # 解析教练决策
             decision = validated.decision
@@ -219,12 +254,12 @@ class EvaluatorCoach:
                 "detected_errors": detected_errors,
             }
 
-        except (json.JSONDecodeError, ValidationError, ValueError) as e:
-            logger.error(f"[{self.session_id}] 评估教练 JSON 解析失败: {str(e)}")
+        except (json.JSONDecodeError, ValidationError, ValueError, KeyError, TypeError, AttributeError) as e:
+            logger.error(f"[{self.session_id}] 评估教练 JSON 解析失败: {str(e)}", exc_info=True)
             return FALLBACK_RESULT.copy()
 
         except Exception as e:
-            logger.error(f"[{self.session_id}] 评估教练异常: {str(e)}")
+            logger.error(f"[{self.session_id}] 评估教练异常: {str(e)}", exc_info=True)
             return FALLBACK_RESULT.copy()
 
     async def _self_check_message(self, coach_message: str, ba_message: str, context: dict) -> str:
@@ -276,3 +311,44 @@ class EvaluatorCoach:
                 }
             ],
         }
+
+    async def check_halt_resolution(self, ba_new_message: str, halt_issue: dict, context: dict) -> dict:
+        """打断专项校验：只判断原 halt 问题是否解决，不做全量评估
+
+        Args:
+            ba_new_message: BA 修改后的新消息
+            halt_issue: {type, description, attempts}
+            context: 上下文（含 concerns）
+
+        Returns:
+            {
+                "resolved": bool,
+                "feedback": str,  # 解决时认可；未解决时针对同一问题再提示
+            }
+        """
+        description = halt_issue.get("description") or "上轮被打断的问题"
+        concerns = context.get("concerns", "当前顾虑")
+        try:
+            prompt = HALT_CHECK_PROMPT.format(
+                halt_issue_description=description,
+                ba_new_message=ba_new_message,
+                concerns=concerns,
+            )
+            result = await call_llm(
+                prompt,
+                session_id=self.session_id,
+                observation_name="halt-check",
+                max_tokens=400,
+            )
+            if result is None:
+                # LLM 失败时倾向放行，避免卡死会话
+                logger.warning(f"[{self.session_id}] halt 校验 LLM 返回 None，放行")
+                return {"resolved": True, "feedback": "校验服务暂时不可用，本轮放行。"}
+            checked = HaltCheckResult.model_validate_json(result)
+            return {"resolved": checked.resolved, "feedback": checked.feedback}
+        except (ValidationError, ValueError, json.JSONDecodeError) as exc:
+            logger.warning(f"[{self.session_id}] halt 校验解析失败，放行: {exc}")
+            return {"resolved": True, "feedback": "校验异常，本轮放行。"}
+        except Exception as exc:
+            logger.warning(f"[{self.session_id}] halt 校验异常，放行: {exc}")
+            return {"resolved": True, "feedback": "校验异常，本轮放行。"}

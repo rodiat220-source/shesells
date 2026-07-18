@@ -16,6 +16,7 @@ interface SessionStore {
   messages: Message[];
   isLoading: boolean;
   isFinishing: boolean;
+  isContinuingAfterHalt: boolean;
   isHalted: boolean;
   error: string | null;
   persona: PersonaResult | null;
@@ -38,6 +39,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   messages: [],
   isLoading: false,
   isFinishing: false,
+  isContinuingAfterHalt: false,
   isHalted: false,
   error: null,
   persona: null,
@@ -110,9 +112,9 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
   continueAfterHalt: async () => {
     const { session } = get();
-    if (!session || get().isLoading) return;
+    if (!session || get().isLoading || get().isContinuingAfterHalt) return;
 
-    set({ isLoading: true, error: null });
+    set({ isContinuingAfterHalt: true, error: null });
     try {
       const data = await continueTrainingSession(session.sessionId) as {
         updatedState?: Partial<CustomerState>;
@@ -121,7 +123,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         sessionStatus: Session["status"];
       };
       set((state) => ({
-        isLoading: false,
+        isContinuingAfterHalt: false,
         isHalted: false,
         session: state.session
           ? {
@@ -136,7 +138,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
           : null,
       }));
     } catch {
-      set({ error: "暂时无法继续训练，请稍后重试。", isLoading: false });
+      set({ error: "暂时无法继续训练，请稍后重试。", isContinuingAfterHalt: false });
     }
   },
 
@@ -195,5 +197,5 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     }
   },
 
-  reset: () => set({ session: null, messages: [], isLoading: false, isFinishing: false, isHalted: false, error: null, persona: null, isGeneratingPersona: false }),
+  reset: () => set({ session: null, messages: [], isLoading: false, isFinishing: false, isContinuingAfterHalt: false, isHalted: false, error: null, persona: null, isGeneratingPersona: false }),
 }));

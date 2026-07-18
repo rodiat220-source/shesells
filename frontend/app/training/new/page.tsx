@@ -12,6 +12,7 @@ import {
   buildPersonaPreview,
   hasRequiredPersonaTags,
   saveSessionPersona,
+  saveSessionRecord,
 } from "@/src/lib/persona";
 import type { PersonaResult, PersonaTags } from "@/src/types";
 
@@ -28,6 +29,7 @@ export default function TrainingSetupPage() {
   const [isStarting, setIsStarting] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [coachStyle, setCoachStyle] = useState<string>("gentle");
 
   const persona = useMemo(() => {
     if (!hasRequiredPersonaTags(tags)) return null;
@@ -79,8 +81,10 @@ export default function TrainingSetupPage() {
       const data = await createTrainingSession({
         customerProfile: personaResult.customerProfile,
         initialMessage: personaResult.initialMessage,
+        coachStyle,
       });
       saveSessionPersona(data.sessionId, persona);
+      saveSessionRecord(data.sessionId, persona.displayLine);
       router.push(`/session/${data.sessionId}`);
     } catch {
       setIsStarting(false);
@@ -162,6 +166,26 @@ export default function TrainingSetupPage() {
               maxLength={80}
             />
           </label>
+          <div className="tag-group" aria-label="教练风格">
+            <div className="tag-group-head"><strong>教练风格</strong><span>选填</span></div>
+            <div className="tag-options">
+              <button
+                className={coachStyle === "gentle" ? "is-selected" : ""}
+                onClick={() => setCoachStyle("gentle")}
+                type="button"
+              >温和模式</button>
+              <button
+                className={coachStyle === "strict" ? "is-selected" : ""}
+                onClick={() => setCoachStyle("strict")}
+                type="button"
+              >严格模式</button>
+            </div>
+            <p style={{marginTop:8,fontSize:12,color:'var(--muted)'}}>
+              {coachStyle === "strict"
+                ? "严格模式：对BA要求更高，评分偏严，遗漏关键信息时更倾向介入"
+                : "温和模式：鼓励为主，首次小错误会略过，评分中性"}
+            </p>
+          </div>
         </article>
 
         <aside className="setup-preview">

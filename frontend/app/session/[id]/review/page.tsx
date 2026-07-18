@@ -3,7 +3,7 @@
 import { use, useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Home, MessageCircle, RotateCcw, Sparkles, Trophy } from "lucide-react";
+import { CheckCircle2, Heart, Home, MessageCircle, RotateCcw, Sparkles, Trophy, XCircle } from "lucide-react";
 import { CriticalTimeline } from "@/components/CriticalTimeline";
 import { MiniRadar } from "@/components/MiniRadar";
 import { ReplayInline } from "@/components/ReplayInline";
@@ -19,6 +19,13 @@ const dimensionLabels: Array<[keyof Dimensions, string]> = [
   ["objectionHandling", "异议处理"],
   ["recommendation", "推荐力"],
 ];
+
+// 结局配置：颜色 + 图标 + 标签
+const outcomeConfig = {
+  deal: { label: "成交", icon: CheckCircle2, tone: "deal" },
+  churn: { label: "流失离店", icon: XCircle, tone: "churn" },
+  follow_up: { label: "待跟进", icon: Heart, tone: "follow_up" },
+} as const;
 
 export default function ReviewPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -55,6 +62,14 @@ export default function ReviewPage({ params }: { params: Promise<{ id: string }>
   }, [customerProfile, personaOverride]);
   const scenarioTitle = persona?.displayLine || "本次训练画像";
 
+  // 结局卡数据
+  const outcome = summary?.metadata?.outcome ?? "follow_up";
+  const outcomeTitle = summary?.metadata?.outcomeTitle ?? "";
+  const finalState = summary?.metadata?.finalState;
+  const highlightSteps = summary?.metadata?.highlightSteps ?? [];
+  const nextSuggestion = summary?.metadata?.nextSuggestion ?? "";
+  const OutcomeIcon = outcomeConfig[outcome]?.icon ?? Heart;
+
   return (
     <main className="review-shell">
       <header className="review-header">
@@ -62,6 +77,37 @@ export default function ReviewPage({ params }: { params: Promise<{ id: string }>
         <Link className="brand training-brand" href="/"><span className="brand-mark">S</span><span>SheSells</span></Link>
         <div className="session-title"><strong>训练复盘</strong><span>{scenarioTitle}</span></div>
       </header>
+
+      {/* 结局卡：置顶，三种结局共用同一套样式，只改标签颜色和文案 */}
+      <section className={`outcome-card outcome-${outcome}`}>
+        <div className="outcome-badge">
+          <OutcomeIcon size={18} />
+          <span>{outcomeConfig[outcome]?.label}</span>
+        </div>
+        <h1 className="outcome-title">{outcomeTitle || "本次训练已结束"}</h1>
+        {finalState && (
+          <div className="outcome-state">
+            <span>购买意愿 <strong>{finalState.intent}</strong></span>
+            <span>信任 <strong>{finalState.trust}</strong></span>
+          </div>
+        )}
+        {highlightSteps.length > 0 && (
+          <div className="outcome-highlights">
+            <span className="outcome-section-label">做对的关键 {highlightSteps.length} 步</span>
+            <ul>
+              {highlightSteps.map((step, index) => (
+                <li key={index}>· {step}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {nextSuggestion && (
+          <div className="outcome-suggestion">
+            <span className="outcome-section-label">下次可以更好</span>
+            <p>· {nextSuggestion}</p>
+          </div>
+        )}
+      </section>
 
       <section className="review-hero">
         <div className="review-score-card">
@@ -108,14 +154,14 @@ export default function ReviewPage({ params }: { params: Promise<{ id: string }>
         </article>
       </section>
 
-      <nav className="review-actions" aria-label="复盘操作">
-        <Link
-          href={`/session/${id}/conversation`}
-          className={isPending && pendingTarget === `/session/${id}/conversation` ? "is-loading" : ""}
-          aria-disabled={isPending}
-        >
-          <MessageCircle size={17} />回看对话
-        </Link>
+        <nav className="review-actions" aria-label="复盘操作">
+          <button
+            onClick={() => navigate(`/session/${id}/conversation`)}
+            className={isPending && pendingTarget === `/session/${id}/conversation` ? "is-loading" : ""}
+            disabled={isPending}
+          >
+            {isPending && pendingTarget === `/session/${id}/conversation` ? "正在进入…" : <><MessageCircle size={17} />回看对话</>}
+          </button>
         <button
           onClick={() => navigate("/training/new")}
           className={isPending && pendingTarget === "/training/new" ? "is-loading" : ""}

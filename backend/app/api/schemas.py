@@ -3,11 +3,20 @@ from typing import Optional, List
 from pydantic import BaseModel, Field
 
 
+class ReasoningDetail(BaseModel):
+    """推理链详情——观察、对比、原因、标杆"""
+    observation: str = ""
+    comparison: str = ""
+    reason: str = ""
+    benchmark: str = ""
+
+
 class SessionCreateRequest(BaseModel):
     """创建会话请求"""
     scenario_id: str = "custom_persona"  # 场景 ID，默认自定义画像
     customer_profile: Optional[dict] = None  # 画像数据（由 /api/persona 生成）
     initial_message: Optional[str] = None  # 顾客开场白
+    coach_style: str = "gentle"  # 教练风格：strict 严格模式 / gentle 温和模式
 
 
 class CustomerProfile(BaseModel):
@@ -43,10 +52,10 @@ class CustomerState(BaseModel):
 
 class DimensionWithReasoning(BaseModel):
     """单维度评分（含推理链）"""
-    score: int = Field(ge=0, le=100)   # 维度分数（0-100）
-    reasoning: str                      # 评分依据
-
-
+    score: int = Field(ge=0, le=100)
+    status: str = "good"
+    summary: str = ""
+    reasoning: dict = Field(default_factory=dict)
 class FinalDimensions(BaseModel):
     """最终五维评分（含推理链）"""
     listening: DimensionWithReasoning            # 倾听力
@@ -132,6 +141,11 @@ class FinishResponse(BaseModel):
     key_moments: List[KeyMoment]       # 关键时刻列表
     champion_replay: ChampionReplay    # 销冠对比数据
     status: str                        # 会话状态
+    outcome: str = "follow_up"         # 结局：deal / churn / follow_up
+    outcome_title: str = ""            # 结局标题（如"她把心交给了你"）
+    final_state: Optional[dict] = None # 顾客隐状态终值（trust, intent, irritation_fear）
+    highlight_steps: List[str] = Field(default_factory=list)  # 做对的关键步骤
+    next_suggestion: str = ""          # 一条核心建议
 
 
 class SessionResponse(BaseModel):
@@ -147,6 +161,7 @@ class SessionResponse(BaseModel):
     customer_state: CustomerState               # 当前顾客状态
     ba_turn_count: int                          # BA 已回复轮数
     persona_profile: Optional[dict] = None       # 完整画像数据（动态画像模式）
+    finish_data: Optional[dict] = None            # 训练总结数据（用于页面刷新恢复）
 
 
 # ========== 案例复盘相关模型 ==========

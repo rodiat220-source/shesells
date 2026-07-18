@@ -10,6 +10,7 @@ import { ReplayInline } from "./ReplayInline";
 const coachConfig = {
   probe: { label: "教练提示", icon: Lightbulb },
   halt: { label: "停一下", icon: CircleStop },
+  halt_with_champion: { label: "停一下 · 销冠示范", icon: CircleStop },
   feedback: { label: "即时反馈", icon: Bot },
   summary: { label: "训练总结", icon: Sparkles },
   champion_replay: { label: "优秀示范", icon: Sparkles },
@@ -27,13 +28,16 @@ export function MessageBubble({
   customerLabel?: string;
 }) {
   const { continueAfterHalt, isHalted } = useSessionStore();
-
+  const session = useSessionStore((s) => s.session);
+ 
   if (message.role === "coach" && message.coachType) {
     const config = coachConfig[message.coachType];
     const Icon = config.icon;
     const dimensions = message.metadata?.dimensions;
     const overall = dimensions ? Math.round(Object.values(dimensions).reduce((sum, score) => sum + score, 0) / 5) : null;
-    const shouldShowAction = Boolean(message.metadata?.requiresAction && (forceCoachAction || isHalted));
+    // halt 时不在这里显示"明白了，继续"按钮，因为 BAInput 已提供"放弃修改，继续"
+    // 仅在回看页（forceCoachAction=true）显示按钮占位
+    const shouldShowAction = Boolean(forceCoachAction && message.metadata?.requiresAction);
 
     return (
       <article className={`coach-card coach-${message.coachType}`}>
@@ -51,7 +55,7 @@ export function MessageBubble({
                 <span>综合表现</span><strong>{overall}</strong><small>/ 100</small>
                 <p>你已经建立了很好的信任基础</p>
               </div>
-              <MiniRadar dimensions={dimensions} />
+              <MiniRadar dimensions={dimensions} reasoning={session?.dimensionReasoning} />
             </div>
           )}
           {message.metadata?.criticalMoments && <CriticalTimeline moments={message.metadata.criticalMoments} />}

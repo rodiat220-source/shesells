@@ -1,5 +1,5 @@
 export type SalesStage = "opening" | "probing" | "objection" | "recommending" | "closing";
-export type CoachType = "probe" | "halt" | "feedback" | "summary" | "champion_replay";
+export type CoachType = "probe" | "halt" | "halt_with_champion" | "feedback" | "summary" | "champion_replay";
 
 export interface PersonaTags {
   ageRange: string;
@@ -54,7 +54,7 @@ export interface Dimensions {
   warmth: number;
 }
 
-export type DimensionReasoning = Record<keyof Dimensions, string>;
+export type DimensionReasoning = Record<keyof Dimensions, any>;
 
 export interface CriticalMoment {
   turn: number;
@@ -88,6 +88,12 @@ export interface Message {
     replayTurns?: ReplayTurn[];
     requiresAction?: boolean;
     actionLabel?: string;
+    // 结局卡相关（仅 summary 消息）
+    outcome?: "deal" | "churn" | "follow_up";
+    outcomeTitle?: string;
+    finalState?: { trust: number; intent: number; irritation_fear: number };
+    highlightSteps?: string[];
+    nextSuggestion?: string;
   };
 }
 

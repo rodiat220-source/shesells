@@ -20,7 +20,7 @@ export function CriticalTimeline({
     <div className="critical-block">
       <h4>关键时刻</h4>
       <div className="critical-list">
-        {[...moments].sort((a, b) => a.turn - b.turn).map((moment) => {
+        {[...moments].sort((a, b) => a.turn - b.turn).map((moment, idx) => {
           const isGood = moment.type === "good_probe" || moment.type === "buying_signal";
           const content = (
             <>

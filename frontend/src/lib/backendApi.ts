@@ -111,6 +111,7 @@ interface BackendSessionData {
   customer_state?: BackendCustomerState;
   ba_turn_count?: number;
   persona_profile?: BackendPersonaCustomerProfile;
+  finish_data?: any;
 }
 
 interface BackendKeyMoment {
@@ -137,6 +138,15 @@ interface BackendFinishData {
     rounds?: BackendChampionRound[];
   };
   status: string;
+  outcome?: string;               // 结局：deal / churn / follow_up
+  outcome_title?: string;          // 结局标题
+  final_state?: {                  // 顾客隐状态终值
+    trust: number;
+    intent: number;
+    irritation_fear: number;
+  };
+  highlight_steps?: string[];      // 做对的关键步骤
+  next_suggestion?: string;        // 一条核心建议
 }
 
 interface BackendCaseAnalysisData {
@@ -237,6 +247,7 @@ export async function generatePersona(tags: {
 export async function createTrainingSession(persona?: {
   customerProfile: PersonaResult["customerProfile"];
   initialMessage: string;
+  coachStyle?: string;
 }) {
   const body = persona
     ? {
@@ -251,8 +262,9 @@ export async function createTrainingSession(persona?: {
           display_line: persona.customerProfile.displayLine,
         },
         initial_message: persona.initialMessage,
+        coach_style: persona.coachStyle ?? "gentle",
       }
-    : { scenario_id: scenarioId };
+    : { scenario_id: scenarioId, coach_style: "gentle" };
 
   const data = await backendRequest<BackendSessionCreateData>("/api/session", {
     method: "POST",
@@ -322,6 +334,11 @@ export async function finishTrainingSession(sessionId: string, turn: number) {
         metadata: {
           dimensions,
           criticalMoments: mapCriticalMoments(data.key_moments),
+          outcome: (data.outcome ?? "follow_up") as "deal" | "churn" | "follow_up",
+          outcomeTitle: data.outcome_title ?? "",
+          finalState: data.final_state,
+          highlightSteps: data.highlight_steps ?? [],
+          nextSuggestion: data.next_suggestion ?? "",
         },
       },
       {
@@ -381,6 +398,31 @@ function mapScenario(data: BackendSessionCreateData): Scenario {
 
 function mapSession(data: BackendSessionData): Session {
   const messages = mapBackendMessages(data.messages);
+  // 从持久化的 finish_data 恢复总结和销冠示范消息
+  if (data.finish_data) {
+    const fd = data.finish_data;
+    const dims = mapFinalDimensions(fd.dimensions ?? {});
+    const turn = messages.filter((m) => m.role === "ba").length;
+    messages.push({
+      id: "summary_restored", turn, role: "coach", coachType: "summary",
+      content: fd.summary ?? "", timestamp: new Date().toISOString(),
+      metadata: {
+        dimensions: dims,
+        criticalMoments: mapCriticalMoments(fd.key_moments ?? []),
+        outcome: (fd.outcome ?? "follow_up") as "deal" | "churn" | "follow_up",
+        outcomeTitle: fd.outcome_title ?? "",
+        finalState: fd.final_state,
+        highlightSteps: fd.highlight_steps ?? [],
+        nextSuggestion: fd.next_suggestion ?? "",
+      },
+    } as Message);
+    messages.push({
+      id: "replay_restored", turn, role: "coach", coachType: "champion_replay",
+      content: fd.champion_replay?.title ?? "优秀示范",
+      timestamp: new Date().toISOString(),
+      metadata: { replayTurns: mapReplayTurns(fd.champion_replay?.rounds ?? []) },
+    } as Message);
+  }
   return {
     sessionId: data.session_id,
     scenarioId,
@@ -544,3 +586,4 @@ function mapReplayTurns(rounds: BackendChampionRound[]): ReplayTurn[] {
     tags: round.skill_tags,
   }));
 }
+

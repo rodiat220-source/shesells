@@ -249,6 +249,8 @@ class PromptTemplateTest(unittest.IsolatedAsyncioTestCase):
             stage="probing",
             state='{"trust": 50}',
             history="[customer] 我有点担心",
+            last_coach_advice="暂无",
+            coach_style="gentle",
         )
         summary_prompt = SUMMARY_PROMPT.format(
             profile='{"goal": "改善泛红", "concerns": ["担心刺激"]}',

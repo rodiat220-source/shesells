@@ -86,11 +86,11 @@ class CustomerSimulator:
                 return self._fallback_result(profile_context, state)
 
             parsed = CustomerReply.model_validate_json(result)
-
+            
             # 限制状态变化范围在 -15 到 15
             trust_delta = max(-15, min(15, parsed.state_delta.trust))
             intent_delta = max(-15, min(15, parsed.state_delta.intent))
-
+            
             logger.info(f"[{self.session_id}] 顾客回复生成成功")
             return {
                 "reply": parsed.reply,
