@@ -151,7 +151,26 @@ pydantic-settings # 配置管理
 4. **日志系统**：完善日志记录和监控
 5. **测试框架**：添加 pytest 测试用例
 
-## 近期新增（2026-07-18 优化）
+## 近期新增
+
+### 2026-07-19 性能优化
+
+| 优化项 | 说明 | 涉及文件 |
+|--------|------|---------|
+| 教练自省并行化 | 教练自省改为 syncio.create_task，与顾客回复并行执行，节省每轮 ~7-10s | routes.py |
+| finish 历史截断 | 只保留最近 8 轮对话（16 条消息）传入总结 prompt，长对话加速 30-50% | routes.py |
+| 减少 LLM 重试 | MAX_RETRIES: 2→1，TIMEOUT: 120s→60s，失败时更快降级 | llm_client.py |
+| 减少日志 IO | save/load/exists 日志从 info 降为 debug | session_manager.py |
+| 限制 Agent max_tokens | 顾客模拟器 500，评估教练 1500，减少无用输出等待 | customer_simulator.py, evaluator_coach.py |
+
+#### API 响应速度预期
+
+| 接口 | 优化前 | 优化后 |
+|------|--------|--------|
+| POST /api/chat（正常轮） | ~20s | ~10-12s |
+| POST /api/finish（满 12 轮） | ~20s+ | ~10-15s |
+
+### 2026-07-18 优化
 
 ### 新功能
 

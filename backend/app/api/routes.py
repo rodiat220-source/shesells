@@ -1,4 +1,4 @@
-# API 路由定义文件 - 实现 5 个接口
+﻿# API 路由定义文件 - 实现 5 个接口
 from __future__ import annotations
 import logging
 import uuid
@@ -816,11 +816,12 @@ async def chat(request: ChatRequest) -> dict:
             },
         )
 
-        # ========== 教练自省：回顾评分是否合理 ==========
+        # ========== 教练自省：回顾评分是否合理（与顾客回复并行） ==========
         coach_style = session_data.get("coach_style", "gentle")
+        self_review_task = None
         if not is_final_turn:
-            try:
-                review_result = await call_llm(
+            self_review_task = asyncio.create_task(
+                call_llm(
                     COACH_SELF_REVIEW_PROMPT.format(
                         ba_message=request.message,
                         current_scores=json.dumps(session_data["dimensions"], ensure_ascii=False),
@@ -832,24 +833,7 @@ async def chat(request: ChatRequest) -> dict:
                     max_tokens=500,
                     temperature=0.3,
                 )
-                if review_result:
-                    reviewed = json.loads(review_result)
-                    if reviewed.get("reviewed") and reviewed.get("dimensions"):
-                        adj = reviewed["dimensions"]
-                        session_data["dimensions"] = {
-                            name: max(0, min(100, adj[name]["score"])) for name in DIMENSION_NAMES
-                        }
-                        session_data["dimension_reasoning"] = adj
-                        logger.info(f"[{session_id}] 教练自省调整了评分")
-            except Exception as exc:
-                logger.warning(f"[{session_id}] 教练自省解析失败，保留原评分: {exc}")
-        # 根据教练风格调整评分偏差
-        bias = COACH_STYLE_CONFIG.get(coach_style, {}).get("score_bias", 0)
-        if bias != 0:
-            for name in DIMENSION_NAMES:
-                if name in session_data["dimensions"]:
-                    session_data["dimensions"][name] = max(0, min(100, session_data["dimensions"][name] + bias))
-
+            )
         new_messages = []
         customer_result = None
 
@@ -872,6 +856,30 @@ async def chat(request: ChatRequest) -> dict:
             logger.info(f"[{session_id}] 已达最大轮数 {MAX_TRAINING_TURNS}，本轮不生成顾客回复")
             # 如果教练想介入，忽略（已是最后一轮，不再打断）
             pass
+
+        # 等待教练自省完成（与顾客回复并行执行）
+        if self_review_task is not None:
+            try:
+                review_result = await self_review_task
+                if review_result:
+                    reviewed = json.loads(review_result)
+                    if reviewed.get("reviewed") and reviewed.get("dimensions"):
+                        adj = reviewed["dimensions"]
+                        session_data["dimensions"] = {
+                            name: max(0, min(100, adj[name]["score"])) for name in DIMENSION_NAMES
+                        }
+                        session_data["dimension_reasoning"] = adj
+                        logger.info(f"[{session_id}] 教练自省调整了评分")
+            except Exception as exc:
+                logger.warning(f"[{session_id}] 教练自省解析失败，保留原评分: {exc}")
+
+        # 根据教练风格调整评分偏差
+        bias = COACH_STYLE_CONFIG.get(coach_style, {}).get("score_bias", 0)
+        if bias != 0:
+            for name in DIMENSION_NAMES:
+                if name in session_data["dimensions"]:
+                    session_data["dimensions"][name] = max(0, min(100, session_data["dimensions"][name] + bias))
+
 
 
         # 教练决策处理（最后一轮跳过教练介入）
@@ -1019,9 +1027,14 @@ async def finish(request: FinishRequest) -> dict:
         state = session_data.get("customer_state", {})
 
         # 构建完整对话上下文
+        # 只保留最近 8 轮对话（最多 16 条消息），减少 prompt 长度加速生成
+        recent_messages = session_data["messages"]
+        if len(recent_messages) > 16:
+            recent_messages = recent_messages[-16:]
         history_text = "\n".join(
-            f"[{msg['role']}] {msg['content']}" for msg in session_data["messages"]
-        )
+            f"[{msg['role']}] {msg['content']}" for msg in recent_messages
+        ) if recent_messages else "（暂无对话记录）"
+
 
         # 调用 LLM 生成总结
         prompt = SUMMARY_PROMPT.format(

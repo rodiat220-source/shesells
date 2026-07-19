@@ -164,6 +164,7 @@ class EvaluatorCoach:
                 prompt,
                 session_id=self.session_id,
                 observation_name="evaluator-coach",
+                max_tokens=1500,
             )
 
             # LLM 返回 None，使用降级数据

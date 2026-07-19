@@ -11,9 +11,9 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 # 最大重试次数
-MAX_RETRIES = 2
+MAX_RETRIES = 1
 # 请求超时时间（秒）
-TIMEOUT = 120
+TIMEOUT = 60
 # 训练场景输出结构固定，限制上限避免模型无必要地生成过长内容。
 MAX_OUTPUT_TOKENS = 2048
 
