@@ -112,7 +112,7 @@ EvaluatorCoach prompt 明确约束：
 
 ---
 
-_整理日期：2026-07-16_
+_整理日期：2026-07-18_
 _项目：SheSells —— AI 销售教练 Agent · 第三幕_
 
 

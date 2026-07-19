@@ -687,5 +687,5 @@ export const finalEvaluatorSystemPrompt = `
 
 ---
 
-_整理日期：2026-07-11_
+_整理日期：2026-07-19_
 _对应文档：SheSells-AI销售教练-项目规划.md V3.0 / SheSells-技术详设.md V2.0_

@@ -1,10 +1,10 @@
 # SheSells —— 执行规划：方法论驱动的交付路线图
 
-> 文档日期：2026-07-13
+> 文档日期：2026-07-19
 > 用途：将科学销售方法论映射到 Day 3-5 的具体代码/内容交付物
 > 前提：Day 1-2 已完成 Data Model、API 契约、Customer Simulator、EvaluatorCoach Prompts、前端对话骨架
 
-## 当前运行时基线（2026-07-17）
+## 当前运行时基线（2026-07-19）
 
 当前后端运行时是 Python FastAPI，动态画像相关实现和验证入口如下：
 
@@ -421,5 +421,5 @@ export function buildSummaryPrompt(params: {
 
 ---
 
-_整理日期：2026-07-13_
+_整理日期：2026-07-19_
 _对应项目规划 V3.0 Agent 方案_

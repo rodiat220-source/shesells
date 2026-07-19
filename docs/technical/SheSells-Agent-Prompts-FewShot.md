@@ -220,5 +220,5 @@ const result = CustomerSimulatorOutputSchema.parse(raw);
 
 ---
 
-_整理日期：2026-07-11_
+_整理日期：2026-07-19_
 _对应项目：SheSells —— AI 销售教练 Agent_

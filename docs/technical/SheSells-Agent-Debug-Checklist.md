@@ -80,7 +80,7 @@
 - 顾客画像标签化 PRD：docs/product/SheSells-顾客画像标签化-需求文档.md
 - 案例复盘 PRD：docs/product/SheSells-案例复盘-需求文档.md
 
-## 九、动态画像闭环验收记录（2026-07-17）
+## 九、动态画像闭环验收记录（2026-07-19）
 
 运行时以 `backend/app/` Python 实现为准，`docs/technical/SheSells-prompts.ts` 保留为历史 TypeScript 参考。
 

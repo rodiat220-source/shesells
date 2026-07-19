@@ -11,11 +11,16 @@ app = FastAPI(title="SheSells API", version="1.0.0")
 # CORS 配置 - 允许前端跨域访问
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # 前端地址
+    allow_origins=["http://localhost:3000", "http://118.89.19.149"],  # 前端地址
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 健康检查路由
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "service": "SheSells API"}
 
 # 挂载路由，统一前缀 /api
 app.include_router(router, prefix="/api")
