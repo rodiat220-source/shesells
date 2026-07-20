@@ -401,6 +401,28 @@ class DynamicPersonaFlowTest(unittest.IsolatedAsyncioTestCase):
             self.assertGreaterEqual(len(result["data"]["champion_replay"]["rounds"]), 1)
             self.assertIn("担心泛红", result["data"]["champion_replay"]["rounds"][0]["champion_reply"])
 
+    async def test_chat_double_fallback_graceful_degradation(self) -> None:
+        """Day3 fallback 验证：评估教练和顾客模拟器同时失败时对话不中断"""
+        session_result = await routes.create_session(
+            SessionCreateRequest(
+                customer_profile={
+                    "persona": "敏感肌新手",
+                    "skin_type": "敏感+干皮",
+                    "goal": "try_early_c_late_a",
+                    "concerns": ["刺痛恐惧"],
+                    "tolerance": "low",
+                },
+                initial_message="你好，我想试试早C晚A。",
+            )
+        )
+        session_id = session_result["data"]["session_id"]
+        # 模拟双链路 LLM 同时失败
+        with patch.object(routes, "call_llm", new_callable=AsyncMock, return_value=None):
+            result = await routes.chat(ChatRequest(session_id=session_id, message="我推荐这款精华"))
+        self.assertEqual(result["code"], 0)
+        # 确认有消息返回（顾客 fallback 回复 + 教练默认评分不应阻断对话）
+        self.assertGreater(len(result["data"]["new_messages"]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
