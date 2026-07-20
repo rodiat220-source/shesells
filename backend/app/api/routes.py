@@ -784,6 +784,10 @@ async def chat(request: ChatRequest) -> dict:
         is_final_turn = next_turn >= MAX_TRAINING_TURNS
 
 
+        # ====== Day3 并行编排优化 ======
+        # 三路并行：CustomerSimulator 与 EvaluatorCoach 并发启动，
+        # CoachSelfReview 在评估完成后与顾客结果收集并发执行，
+        # 将每轮响应从串行 ~20s 压缩到 ~10-12s
         # 提前启动顾客模拟器（与评估教练并行）
         if not is_final_turn:
             simulator = CustomerSimulator(session_id, session_manager)
