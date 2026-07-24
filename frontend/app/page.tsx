@@ -5,12 +5,14 @@ import { useRouter } from "next/navigation";
 import {
   ArrowRight,
   BookOpen,
-  Check,
+  ClipboardList,
+  Eye,
   MessageCircleHeart,
   Megaphone,
   MessageCircle,
   ShieldCheck,
   Sparkles,
+  Target,
   Trophy,
 } from "lucide-react";
 
@@ -26,6 +28,33 @@ export default function Home() {
       router.push(path);
     });
   }
+
+  const entryCards = [
+    {
+      path: "/demos",
+      title: "看销冠怎么说",
+      description: "先看标杆对话和教练讲解，知道练好了是什么样。",
+      meta: "首次推荐",
+      icon: Eye,
+      tone: "recommended",
+    },
+    {
+      path: "/case-review",
+      title: "复盘我的真实案例",
+      description: "把一次没成交、被问住或聊崩的经历，拆成可改进动作。",
+      meta: "有案例就从这里进",
+      icon: ClipboardList,
+      tone: "standard",
+    },
+    {
+      path: "/training/new",
+      title: "开始一轮情境训练",
+      description: "选择顾客画像，直接进入模拟对话，获得实时反馈。",
+      meta: "明确想练就直接上",
+      icon: Target,
+      tone: "standard",
+    },
+  ];
 
   return (
     <main className="landing-shell">
@@ -54,27 +83,36 @@ export default function Home() {
             <span>是懂她的能力。</span>
           </h1>
           <p className="hero-description">
-            在真实顾客情境中练习倾听、回应与推荐。你的 AI 教练会在关键时刻主动提醒，陪你把每一次对话变成成长。
+            每个 BA 的训练需求都不一样。你可以先看销冠示范，也可以复盘自己的真实案例，或者直接开始一轮情境训练。
           </p>
 
-          <div className="hero-actions">
-            <button
-              className={`primary-button ${isPending && pendingTarget === "/training/new" ? "is-loading" : ""}`}
-              onClick={() => navigate("/training/new")}
-              disabled={isPending}
-            >
-              {isPending && pendingTarget === "/training/new" ? "正在进入…" : "开始情境训练"}
-              {!isPending && <ArrowRight size={18} />}
-            </button>
-            <button
-              className={`secondary-button ${isPending && pendingTarget === "/case-review" ? "is-loading" : ""}`}
-              onClick={() => navigate("/case-review")}
-              type="button"
-              disabled={isPending}
-            >
-              <BookOpen size={17} />
-              {isPending && pendingTarget === "/case-review" ? "正在进入…" : "案例复盘"}
-            </button>
+          <div className="entry-copy">
+            <BookOpen size={16} />
+            <span>第一次使用，建议先看一段销冠示范；有真实丢单案例时，可以直接进入复盘。</span>
+          </div>
+
+          <div className="home-entry-grid" aria-label="训练入口">
+            {entryCards.map((entry) => {
+              const Icon = entry.icon;
+              const isLoading = isPending && pendingTarget === entry.path;
+              return (
+                <button
+                  className={`home-entry-card ${entry.tone === "recommended" ? "is-recommended" : ""} ${isLoading ? "is-loading" : ""}`}
+                  disabled={isPending}
+                  key={entry.path}
+                  onClick={() => navigate(entry.path)}
+                  type="button"
+                >
+                  <span className="home-entry-icon"><Icon size={18} /></span>
+                  <span className="home-entry-content">
+                    <strong>{isLoading ? "正在进入..." : entry.title}</strong>
+                    <small>{entry.meta}</small>
+                    <em>{entry.description}</em>
+                  </span>
+                  {!isLoading && <ArrowRight size={16} />}
+                </button>
+              );
+            })}
           </div>
 
           <div className="trust-row" aria-label="训练特色">
@@ -125,26 +163,26 @@ export default function Home() {
             </div>
 
             <div className="demo-input">
-              <span>输入你的回应…</span>
+              <span>选择你的训练入口…</span>
               <span className="send-circle"><ArrowRight size={16} /></span>
             </div>
           </div>
 
           <div className="floating-card floating-score">
             <div className="score-ring">86</div>
-            <div><strong>倾听力</strong><span>表现优秀</span></div>
+            <div><strong>示范评分</strong><span>销冠水平</span></div>
           </div>
           <div className="floating-card floating-safe">
             <ShieldCheck size={18} />
-            <span>在安全环境中反复练习</span>
+            <span>先看标杆，再按需训练</span>
           </div>
         </div>
       </section>
 
-            <section className="feature-strip" aria-label="教练能力">
-        <div><span>01</span><strong>主动追问</strong><p>遗漏关键需求时，教练引导你重新思考。</p></div>
-        <div><span>02</span><strong>关键喊停</strong><p>连续错过顾虑时，及时暂停并给出方向。</p></div>
-        <div><span>03</span><strong>销冠对比</strong><p>训练结束后，看优秀顾问如何接住信号。</p></div>
+      <section className="feature-strip" aria-label="训练方式">
+        <div><span>01</span><strong>看标杆</strong><p>先看销冠如何接住顾虑、追问需求和专业收口。</p></div>
+        <div><span>02</span><strong>问案例</strong><p>把真实丢单经历交给 AI，找出关键失误和更优回应。</p></div>
+        <div><span>03</span><strong>做练习</strong><p>选择顾客画像进入情境训练，在对话中获得即时反馈。</p></div>
       </section>
     </main>
   );
